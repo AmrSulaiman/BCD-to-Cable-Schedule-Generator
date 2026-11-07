@@ -1,0 +1,11 @@
+import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
+import fs from 'fs';
+import { readPage } from '../src/pdfread.js';
+const f = process.argv[2];
+const doc = await pdfjs.getDocument({ data: new Uint8Array(fs.readFileSync(f)), verbosity: 0 }).promise;
+const pg = await doc.getPage(1);
+const r = await readPage(pdfjs, pg);
+console.log(r.width, r.height, 'texts', r.texts.length, 'segs', r.segs.length);
+const re = new RegExp(process.argv[3] || 'NA100[01]');
+for (const t of r.texts) if (re.test(t.str)) console.log(JSON.stringify({s:t.str,a:t.angle,sz:+t.size.toFixed(1),x0:+t.x0.toFixed(1),y0:+t.y0.toFixed(1),x1:+t.x1.toFixed(1),y1:+t.y1.toFixed(1)}));
+fs.writeFileSync(f.replace('.pdf','.geom.json'), JSON.stringify(r));

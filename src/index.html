@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BCD to Cable Schedule</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  /* Layout: a drawing-office title strip, two setup panels, then the full-width schedule table. */
+  --paper: #f4f6f8;
+  --sheet: #ffffff;
+  --ink: #17212b;
+  --muted: #5b6875;
+  --rule: #d5dce3;
+  --accent: #1f5fa8;        /* cable-ink blue */
+  --accent-ink: #ffffff;
+  --warn: #b26a00;
+  --warn-bg: #fff4e0;
+  --good: #2c7a4b;
+  --bad: #b3261e;
+  --row-flag: #fffaf0;
+  --font-body: "IBM Plex Sans", "Segoe UI", Arial, sans-serif;
+  --font-mono: "IBM Plex Mono", Consolas, "Courier New", monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #12171c; --sheet: #1a2128; --ink: #e3e9ef; --muted: #93a1ae; --rule: #2e3943;
+    --accent: #6ea8f0; --accent-ink: #0d1620; --warn: #f0b04a; --warn-bg: #3a2c12;
+    --good: #6cc792; --bad: #f2867e; --row-flag: #221d12; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #12171c; --sheet: #1a2128; --ink: #e3e9ef; --muted: #93a1ae; --rule: #2e3943;
+  --accent: #6ea8f0; --accent-ink: #0d1620; --warn: #f0b04a; --warn-bg: #3a2c12;
+  --good: #6cc792; --bad: #f2867e; --row-flag: #221d12; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--paper); color: var(--ink); font: 15px/1.5 var(--font-body); }
+.mono { font-family: var(--font-mono); font-size: 0.86em; }
+.muted { color: var(--muted); }
+h1, h2 { text-wrap: balance; margin: 0; font-weight: 600; }
+h1 { font-size: 1.35rem; }
+h2 { font-size: 1rem; display: flex; gap: 10px; align-items: baseline; }
+h2 .step { font-family: var(--font-mono); color: var(--accent); font-size: 0.85rem; }
+.wrap { max-width: 1400px; margin: 0 auto; padding: 0 20px; display: grid; gap: 18px; }
+
+header.strip { border-bottom: 2px solid var(--ink); background: var(--sheet); margin-bottom: 18px; }
+header .wrap { grid-template-columns: 1fr auto; align-items: end; padding-top: 16px; padding-bottom: 12px; }
+header p { margin: 4px 0 0; color: var(--muted); max-width: 70ch; }
+.local { font-size: 0.82rem; border: 1px solid var(--rule); padding: 6px 10px; color: var(--muted); }
+.local b { color: var(--good); font-weight: 600; }
+
+.panels { display: grid; grid-template-columns: 1.15fr 1fr; gap: 18px; }
+@media (max-width: 900px) { .panels { grid-template-columns: 1fr; } header .wrap { grid-template-columns: 1fr; } }
+.panel { background: var(--sheet); border: 1px solid var(--rule); padding: 16px; display: grid; gap: 12px; align-content: start; }
+
+#drop { border: 2px dashed var(--rule); padding: 22px; text-align: center; display: grid; gap: 6px; transition: border-color .15s, background .15s; }
+#drop.over { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 7%, transparent); }
+#drop label { color: var(--accent); text-decoration: underline; cursor: pointer; font-weight: 500; }
+#drawings { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.dwg { display: flex; justify-content: space-between; gap: 10px; border-left: 3px solid var(--accent); padding: 6px 0 6px 10px; }
+.dwg-main { display: grid; gap: 1px; min-width: 0; }
+.dwg-main span { overflow-wrap: anywhere; }
+.warn { color: var(--warn); font-size: 0.86rem; }
+.empty { color: var(--muted); padding: 10px 0; }
+
+.fields { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 12px; }
+.fields label, .opt label { display: grid; gap: 3px; font-size: 0.82rem; color: var(--muted); }
+input[type=text], select { font: inherit; color: var(--ink); background: var(--paper); border: 1px solid var(--rule); padding: 6px 8px; width: 100%; }
+.opt { display: grid; gap: 10px; }
+.tpl { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 0.86rem; }
+.tpl label { color: var(--accent); text-decoration: underline; cursor: pointer; }
+
+button { font: inherit; font-weight: 500; border: 1px solid var(--accent); background: var(--accent); color: var(--accent-ink); padding: 8px 14px; cursor: pointer; }
+button.ghost { background: transparent; color: var(--accent); }
+button.small { padding: 3px 8px; font-size: 0.82rem; align-self: start; }
+button:disabled { opacity: .45; cursor: not-allowed; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+
+.bar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; }
+.tiles { display: flex; gap: 10px; flex-wrap: wrap; }
+.tile { background: var(--sheet); border: 1px solid var(--rule); padding: 6px 14px; display: grid; min-width: 110px; }
+.tile b { font-size: 1.4rem; font-variant-numeric: tabular-nums; line-height: 1.2; }
+.tile span { font-size: 0.78rem; color: var(--muted); }
+.tile[data-kind=warn] { border-color: var(--warn); background: var(--warn-bg); }
+.tile[data-kind=warn] b { color: var(--warn); }
+.tile[data-kind=good] b { color: var(--good); }
+.actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+#status { min-height: 1.4em; font-size: 0.9rem; color: var(--muted); }
+#status[data-kind=good] { color: var(--good); } #status[data-kind=bad] { color: var(--bad); } #status[data-kind=warn] { color: var(--warn); }
+
+.tablewrap { overflow-x: auto; background: var(--sheet); border: 1px solid var(--rule); margin-bottom: 30px; }
+table { border-collapse: collapse; width: 100%; font-size: 0.86rem; }
+th { position: sticky; top: 0; background: var(--sheet); text-align: left; font-weight: 600; font-size: 0.78rem; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); border-bottom: 2px solid var(--ink); padding: 8px; white-space: nowrap; }
+td { border-bottom: 1px solid var(--rule); padding: 6px 8px; vertical-align: top; }
+td[contenteditable]:hover { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+td[contenteditable]:focus { outline: 2px solid var(--accent); outline-offset: -2px; background: var(--sheet); }
+tr.flagged td { background: var(--row-flag); }
+.sev { width: 18px; padding-right: 0; }
+.dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--good); margin-top: 5px; }
+tr.flagged .dot { background: var(--warn); }
+.flags { min-width: 260px; }
+.chip { display: block; font-size: 0.8rem; color: var(--warn); line-height: 1.35; margin-bottom: 3px; }
+.sheets { white-space: nowrap; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+<header class="strip">
+  <div class="wrap">
+    <div>
+      <h1>BCD to Cable Schedule</h1>
+      <p>Drop the block cable diagrams for one schedule. The tool reads every cable reference, traces each cable to its source and destination, merges cables shown on more than one sheet, and fills the company cable schedule template.</p>
+    </div>
+    <div class="local"><b>Stays on this computer.</b> Drawings are read inside your browser and never uploaded.</div>
+  </div>
+</header>
+
+<main class="wrap">
+  <section class="panels">
+    <div class="panel">
+      <h2><span class="step">01</span> Block cable diagrams</h2>
+      <div id="drop">
+        <div>Drag the BCD PDFs here, all sheets for the schedule at once</div>
+        <div class="muted"><label for="file">or choose files</label> · vector PDFs plotted from AutoCAD</div>
+        <input id="file" class="sr" type="file" accept="application/pdf,.pdf" multiple>
+      </div>
+      <ul id="drawings"></ul>
+    </div>
+
+    <div class="panel">
+      <h2><span class="step">02</span> Schedule header and rules</h2>
+      <div class="fields">
+        <label for="h-title">Project title<input id="h-title" type="text" placeholder="e.g. Gaskell St CSO"></label>
+        <label for="h-number">Project number<input id="h-number" type="text" placeholder="e.g. 80065564-01"></label>
+        <label for="h-doc">Document number<input id="h-doc" type="text" placeholder="e.g. 80065564-01-WAB-42056-NA-SC-E-00003"></label>
+        <label for="h-rev">Document revision<input id="h-rev" type="text" placeholder="e.g. CR.C01"></label>
+      </div>
+      <div class="opt">
+        <label for="direction">Cable direction
+          <select id="direction">
+            <option value="supply-first">Source is the supply end (panel → JB → equipment)</option>
+            <option value="field-first">Source is the field end (equipment → JB → panel)</option>
+          </select>
+        </label>
+        <div class="tpl"><span class="muted">Template:</span> <span id="tpl-name">Built-in company template</span>
+          <label for="tpl">use a different .xlsx</label><input id="tpl" class="sr" type="file" accept=".xlsx"></div>
+        <p class="muted" style="margin:0;font-size:.82rem">Voltage comes from the band: B1 = 24V, B2 and B1&amp;B2 = 400V. Length, CPC type, installation method and comments are left blank.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="bar">
+    <div class="tiles">
+      <div class="tile"><b id="t-dwg">0</b><span>drawings</span></div>
+      <div class="tile"><b id="t-rows">0</b><span>cables</span></div>
+      <div class="tile" id="tile-flag"><b id="t-flag">0</b><span>to check</span></div>
+    </div>
+    <div class="actions">
+      <label class="muted" style="font-size:.86rem;display:flex;gap:6px;align-items:center" for="only-flagged"><input id="only-flagged" type="checkbox"> Only rows to check</label>
+      <button id="btn-xlsx" data-needs-rows>Download Excel schedule</button>
+      <button id="btn-csv" class="ghost" data-needs-rows>Review list (.csv)</button>
+      <button id="btn-json" class="ghost" data-needs-rows>Data (.json)</button>
+      <button id="btn-clear" class="ghost">Clear</button>
+    </div>
+  </section>
+  <div id="status" role="status"></div>
+  <p class="muted" style="margin:-8px 0 0;font-size:.86rem">Click any cell to correct it. Rows with an amber dot have something the tool could not confirm from the drawings; check those before the schedule goes to the client.</p>
+
+  <div class="tablewrap">
+    <table>
+      <thead id="thead"></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+</main>
+
+<script type="text/plain" id="template-b64">TEMPLATE_B64</script>
+<script src="EXCELJS_URL"></script>
+<script type="module">
+APP_JS
+</script>
+</body>
+</html>

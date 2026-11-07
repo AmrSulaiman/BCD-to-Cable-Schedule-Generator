@@ -1,0 +1,20 @@
+{
+  "name": "bcd-cable-schedule",
+  "version": "1.0.0",
+  "description": "Turns block cable diagram PDFs into a filled cable schedule (Excel). Runs in the browser.",
+  "scripts": {
+    "build": "node build.mjs",
+    "build:local": "node build.mjs --local",
+    "extract": "node cli.mjs out.json",
+    "test": "node cli.mjs test/out.json test/DT.pdf test/CSO.pdf test/BS.pdf test/MDB.pdf > /dev/null && node test/compare.mjs test/answer_key.xlsx test/out.json"
+  },
+  "dependencies": {
+    "exceljs": "^4.4.0",
+    "pdfjs-dist": "^4.10.38"
+  },
+  "type": "module",
+  "devDependencies": {
+    "esbuild": "^0.24.2"
+  },
+  "private": true
+}

@@ -1,0 +1,1131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BCD to Cable Schedule</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  /* Layout: a drawing-office title strip, two setup panels, then the full-width schedule table. */
+  --paper: #f4f6f8;
+  --sheet: #ffffff;
+  --ink: #17212b;
+  --muted: #5b6875;
+  --rule: #d5dce3;
+  --accent: #1f5fa8;        /* cable-ink blue */
+  --accent-ink: #ffffff;
+  --warn: #b26a00;
+  --warn-bg: #fff4e0;
+  --good: #2c7a4b;
+  --bad: #b3261e;
+  --row-flag: #fffaf0;
+  --font-body: "IBM Plex Sans", "Segoe UI", Arial, sans-serif;
+  --font-mono: "IBM Plex Mono", Consolas, "Courier New", monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #12171c; --sheet: #1a2128; --ink: #e3e9ef; --muted: #93a1ae; --rule: #2e3943;
+    --accent: #6ea8f0; --accent-ink: #0d1620; --warn: #f0b04a; --warn-bg: #3a2c12;
+    --good: #6cc792; --bad: #f2867e; --row-flag: #221d12; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #12171c; --sheet: #1a2128; --ink: #e3e9ef; --muted: #93a1ae; --rule: #2e3943;
+  --accent: #6ea8f0; --accent-ink: #0d1620; --warn: #f0b04a; --warn-bg: #3a2c12;
+  --good: #6cc792; --bad: #f2867e; --row-flag: #221d12; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--paper); color: var(--ink); font: 15px/1.5 var(--font-body); }
+.mono { font-family: var(--font-mono); font-size: 0.86em; }
+.muted { color: var(--muted); }
+h1, h2 { text-wrap: balance; margin: 0; font-weight: 600; }
+h1 { font-size: 1.35rem; }
+h2 { font-size: 1rem; display: flex; gap: 10px; align-items: baseline; }
+h2 .step { font-family: var(--font-mono); color: var(--accent); font-size: 0.85rem; }
+.wrap { max-width: 1400px; margin: 0 auto; padding: 0 20px; display: grid; gap: 18px; }
+
+header.strip { border-bottom: 2px solid var(--ink); background: var(--sheet); margin-bottom: 18px; }
+header .wrap { grid-template-columns: 1fr auto; align-items: end; padding-top: 16px; padding-bottom: 12px; }
+header p { margin: 4px 0 0; color: var(--muted); max-width: 70ch; }
+.local { font-size: 0.82rem; border: 1px solid var(--rule); padding: 6px 10px; color: var(--muted); }
+.local b { color: var(--good); font-weight: 600; }
+
+.panels { display: grid; grid-template-columns: 1.15fr 1fr; gap: 18px; }
+@media (max-width: 900px) { .panels { grid-template-columns: 1fr; } header .wrap { grid-template-columns: 1fr; } }
+.panel { background: var(--sheet); border: 1px solid var(--rule); padding: 16px; display: grid; gap: 12px; align-content: start; }
+
+#drop { border: 2px dashed var(--rule); padding: 22px; text-align: center; display: grid; gap: 6px; transition: border-color .15s, background .15s; }
+#drop.over { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 7%, transparent); }
+#drop label { color: var(--accent); text-decoration: underline; cursor: pointer; font-weight: 500; }
+#drawings { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.dwg { display: flex; justify-content: space-between; gap: 10px; border-left: 3px solid var(--accent); padding: 6px 0 6px 10px; }
+.dwg-main { display: grid; gap: 1px; min-width: 0; }
+.dwg-main span { overflow-wrap: anywhere; }
+.warn { color: var(--warn); font-size: 0.86rem; }
+.empty { color: var(--muted); padding: 10px 0; }
+
+.fields { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 12px; }
+.fields label, .opt label { display: grid; gap: 3px; font-size: 0.82rem; color: var(--muted); }
+input[type=text], select { font: inherit; color: var(--ink); background: var(--paper); border: 1px solid var(--rule); padding: 6px 8px; width: 100%; }
+.opt { display: grid; gap: 10px; }
+.tpl { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 0.86rem; }
+.tpl label { color: var(--accent); text-decoration: underline; cursor: pointer; }
+
+button { font: inherit; font-weight: 500; border: 1px solid var(--accent); background: var(--accent); color: var(--accent-ink); padding: 8px 14px; cursor: pointer; }
+button.ghost { background: transparent; color: var(--accent); }
+button.small { padding: 3px 8px; font-size: 0.82rem; align-self: start; }
+button:disabled { opacity: .45; cursor: not-allowed; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+
+.bar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; }
+.tiles { display: flex; gap: 10px; flex-wrap: wrap; }
+.tile { background: var(--sheet); border: 1px solid var(--rule); padding: 6px 14px; display: grid; min-width: 110px; }
+.tile b { font-size: 1.4rem; font-variant-numeric: tabular-nums; line-height: 1.2; }
+.tile span { font-size: 0.78rem; color: var(--muted); }
+.tile[data-kind=warn] { border-color: var(--warn); background: var(--warn-bg); }
+.tile[data-kind=warn] b { color: var(--warn); }
+.tile[data-kind=good] b { color: var(--good); }
+.actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+#status { min-height: 1.4em; font-size: 0.9rem; color: var(--muted); }
+#status[data-kind=good] { color: var(--good); } #status[data-kind=bad] { color: var(--bad); } #status[data-kind=warn] { color: var(--warn); }
+
+.tablewrap { overflow-x: auto; background: var(--sheet); border: 1px solid var(--rule); margin-bottom: 30px; }
+table { border-collapse: collapse; width: 100%; font-size: 0.86rem; }
+th { position: sticky; top: 0; background: var(--sheet); text-align: left; font-weight: 600; font-size: 0.78rem; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); border-bottom: 2px solid var(--ink); padding: 8px; white-space: nowrap; }
+td { border-bottom: 1px solid var(--rule); padding: 6px 8px; vertical-align: top; }
+td[contenteditable]:hover { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+td[contenteditable]:focus { outline: 2px solid var(--accent); outline-offset: -2px; background: var(--sheet); }
+tr.flagged td { background: var(--row-flag); }
+.sev { width: 18px; padding-right: 0; }
+.dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--good); margin-top: 5px; }
+tr.flagged .dot { background: var(--warn); }
+.flags { min-width: 260px; }
+.chip { display: block; font-size: 0.8rem; color: var(--warn); line-height: 1.35; margin-bottom: 3px; }
+.sheets { white-space: nowrap; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+<header class="strip">
+  <div class="wrap">
+    <div>
+      <h1>BCD to Cable Schedule</h1>
+      <p>Drop the block cable diagrams for one schedule. The tool reads every cable reference, traces each cable to its source and destination, merges cables shown on more than one sheet, and fills the company cable schedule template.</p>
+    </div>
+    <div class="local"><b>Stays on this computer.</b> Drawings are read inside your browser and never uploaded.</div>
+  </div>
+</header>
+
+<main class="wrap">
+  <section class="panels">
+    <div class="panel">
+      <h2><span class="step">01</span> Block cable diagrams</h2>
+      <div id="drop">
+        <div>Drag the BCD PDFs here, all sheets for the schedule at once</div>
+        <div class="muted"><label for="file">or choose files</label> · vector PDFs plotted from AutoCAD</div>
+        <input id="file" class="sr" type="file" accept="application/pdf,.pdf" multiple>
+      </div>
+      <ul id="drawings"></ul>
+    </div>
+
+    <div class="panel">
+      <h2><span class="step">02</span> Schedule header and rules</h2>
+      <div class="fields">
+        <label for="h-title">Project title<input id="h-title" type="text" placeholder="e.g. Gaskell St CSO"></label>
+        <label for="h-number">Project number<input id="h-number" type="text" placeholder="e.g. 80065564-01"></label>
+        <label for="h-doc">Document number<input id="h-doc" type="text" placeholder="e.g. 80065564-01-WAB-42056-NA-SC-E-00003"></label>
+        <label for="h-rev">Document revision<input id="h-rev" type="text" placeholder="e.g. CR.C01"></label>
+      </div>
+      <div class="opt">
+        <label for="direction">Cable direction
+          <select id="direction">
+            <option value="supply-first">Source is the supply end (panel → JB → equipment)</option>
+            <option value="field-first">Source is the field end (equipment → JB → panel)</option>
+          </select>
+        </label>
+        <div class="tpl"><span class="muted">Template:</span> <span id="tpl-name">Built-in company template</span>
+          <label for="tpl">use a different .xlsx</label><input id="tpl" class="sr" type="file" accept=".xlsx"></div>
+        <p class="muted" style="margin:0;font-size:.82rem">Voltage comes from the band: B1 = 24V, B2 and B1&amp;B2 = 400V. Length, CPC type, installation method and comments are left blank.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="bar">
+    <div class="tiles">
+      <div class="tile"><b id="t-dwg">0</b><span>drawings</span></div>
+      <div class="tile"><b id="t-rows">0</b><span>cables</span></div>
+      <div class="tile" id="tile-flag"><b id="t-flag">0</b><span>to check</span></div>
+    </div>
+    <div class="actions">
+      <label class="muted" style="font-size:.86rem;display:flex;gap:6px;align-items:center" for="only-flagged"><input id="only-flagged" type="checkbox"> Only rows to check</label>
+      <button id="btn-xlsx" data-needs-rows>Download Excel schedule</button>
+      <button id="btn-csv" class="ghost" data-needs-rows>Review list (.csv)</button>
+      <button id="btn-json" class="ghost" data-needs-rows>Data (.json)</button>
+      <button id="btn-clear" class="ghost">Clear</button>
+    </div>
+  </section>
+  <div id="status" role="status"></div>
+  <p class="muted" style="margin:-8px 0 0;font-size:.86rem">Click any cell to correct it. Rows with an amber dot have something the tool could not confirm from the drawings; check those before the schedule goes to the client.</p>
+
+  <div class="tablewrap">
+    <table>
+      <thead id="thead"></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+</main>
+
+<script type="text/plain" id="template-b64">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</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
+<script type="module">
+// src/app.js
+import * as pdfjs from "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.min.mjs";
+
+// src/pdfread.js
+async function readPage(pdfjs2, page) {
+  const viewport = page.getViewport({ scale: 1 });
+  const vt = viewport.transform;
+  const U = pdfjs2.Util;
+  const tc = await page.getTextContent();
+  const texts = [];
+  for (const it of tc.items) {
+    const str = (it.str || "").replace(/\s+/g, " ").trim();
+    if (!str) continue;
+    const m = U.transform(vt, it.transform);
+    const size = Math.hypot(m[2], m[3]);
+    const ux = m[0], uy = m[1];
+    const len = Math.hypot(ux, uy) || 1;
+    const dx = ux / len, dy = uy / len;
+    const w = it.width * (Math.hypot(m[0], m[1]) / Math.hypot(it.transform[0], it.transform[1]) || 1);
+    const upx = dy, upy = -dx;
+    const ox = m[4], oy = m[5];
+    const pts = [
+      [ox, oy],
+      [ox + dx * w, oy + dy * w],
+      [ox + upx * size, oy + upy * size],
+      [ox + dx * w + upx * size, oy + dy * w + upy * size]
+    ];
+    const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
+    const angle = Math.round(Math.atan2(-dy, dx) * 180 / Math.PI);
+    texts.push({
+      str,
+      size,
+      angle,
+      x0: Math.min(...xs),
+      y0: Math.min(...ys),
+      x1: Math.max(...xs),
+      y1: Math.max(...ys),
+      cx: (Math.min(...xs) + Math.max(...xs)) / 2,
+      cy: (Math.min(...ys) + Math.max(...ys)) / 2,
+      ox,
+      oy,
+      dx,
+      dy
+    });
+  }
+  const ops = await page.getOperatorList();
+  const OPS = pdfjs2.OPS;
+  const segs = [];
+  let ctm = [1, 0, 0, 1, 0, 0];
+  const stack = [];
+  const tp = (x, y) => {
+    const p = U.applyTransform([x, y], ctm);
+    return U.applyTransform(p, vt);
+  };
+  const addSeg = (a, b) => {
+    if (Math.hypot(a[0] - b[0], a[1] - b[1]) < 0.5) return;
+    segs.push({ x1: a[0], y1: a[1], x2: b[0], y2: b[1] });
+  };
+  for (let i = 0; i < ops.fnArray.length; i++) {
+    const fn = ops.fnArray[i], args = ops.argsArray[i];
+    if (fn === OPS.save) stack.push(ctm.slice());
+    else if (fn === OPS.restore) ctm = stack.pop() || [1, 0, 0, 1, 0, 0];
+    else if (fn === OPS.transform) ctm = U.transform(ctm, args);
+    else if (fn === OPS.constructPath) {
+      const [pops, pargs] = args;
+      let k = 0, cur = null, start = null;
+      for (const op of pops) {
+        if (op === OPS.moveTo) {
+          cur = tp(pargs[k], pargs[k + 1]);
+          start = cur;
+          k += 2;
+        } else if (op === OPS.lineTo) {
+          const p = tp(pargs[k], pargs[k + 1]);
+          if (cur) addSeg(cur, p);
+          cur = p;
+          k += 2;
+        } else if (op === OPS.curveTo) {
+          const p = tp(pargs[k + 4], pargs[k + 5]);
+          cur = p;
+          k += 6;
+        } else if (op === OPS.curveTo2 || op === OPS.curveTo3) {
+          const p = tp(pargs[k + 2], pargs[k + 3]);
+          cur = p;
+          k += 4;
+        } else if (op === OPS.closePath) {
+          if (cur && start) addSeg(cur, start);
+          cur = start;
+        } else if (op === OPS.rectangle) {
+          const [x, y, w, h] = pargs.slice(k, k + 4);
+          k += 4;
+          const a = tp(x, y), b = tp(x + w, y), c = tp(x + w, y + h), d = tp(x, y + h);
+          addSeg(a, b);
+          addSeg(b, c);
+          addSeg(c, d);
+          addSeg(d, a);
+          cur = a;
+          start = a;
+        }
+      }
+    }
+  }
+  return { width: viewport.width, height: viewport.height, texts, segs };
+}
+
+// src/rules.js
+var ACRONYMS = [
+  "JB",
+  "LCP",
+  "MCC",
+  "CSO",
+  "DT",
+  "DB",
+  "MDB",
+  "DNO",
+  "EDM",
+  "SPD",
+  "RCD",
+  "ISO",
+  "MCB",
+  "VSD",
+  "DOL",
+  "UPS",
+  "PLC",
+  "HMI",
+  "LV",
+  "HV",
+  "PSU",
+  "DC",
+  "AC",
+  "T1",
+  "T2",
+  "T3",
+  "IO",
+  "I/O",
+  "RTU",
+  "CCTV",
+  "PIR",
+  "LED",
+  "MI",
+  "SWA",
+  "XLPE"
+];
+var FULL_NAMES = {
+  "EB": "Earth Bar",
+  "MDB": "Main Distribution Board",
+  "BS DB": "Building Services Distribution Board",
+  "BUILDING SERVICES DB": "Building Services Distribution Board",
+  "LIGHTS": "Lights"
+};
+function titleCase(s) {
+  if (!s) return "";
+  if (/[a-z]/.test(s)) return s.trim();
+  const acr = new Set(ACRONYMS);
+  return s.trim().split(/(\s+|(?=\()|(?<=\())/).map((w) => {
+    if (!w.trim()) return w;
+    const bare = w.replace(/[()]/g, "");
+    if (acr.has(bare)) return w;
+    if (/^[A-Z]{1,3}\d+[A-Z]?\d*$/.test(bare)) return w;
+    if (/^NO\.?\d*$/.test(bare)) return w.replace(/^NO/, "No");
+    if (/\d/.test(bare) && !/^[A-Z]+$/.test(bare)) return w;
+    return w.charAt(0) + w.slice(1).toLowerCase();
+  }).join("").replace(/\s+/g, " ");
+}
+function fullName(name) {
+  const n = (name || "").replace(/\s+/g, " ").trim();
+  const hit = FULL_NAMES[n.toUpperCase()];
+  return hit || titleCase(n);
+}
+var BAND_VOLTAGE = { "B1": "24V", "B2": "400V", "B1&B2": "400V" };
+function voltageForBand(band, rules = DEFAULT_RULES) {
+  if (!band) return "";
+  const b = band.replace(/\s+/g, "").toUpperCase();
+  if (rules.bandVoltage[b]) return rules.bandVoltage[b];
+  if (b.includes("B2")) return rules.bandVoltage["B2"];
+  return "";
+}
+function normaliseSize(s) {
+  let t = (s || "").replace(/×/g, "x").replace(/\s+/g, " ").trim();
+  t = t.replace(/mm²/g, "mm2");
+  t = t.replace(/\s*x\s*/gi, " x ");
+  t = t.replace(/(\d)\s*(c|pr|g)\b/gi, (m, d, u) => d + (u.toLowerCase() === "pr" ? "PR" : u.toLowerCase() === "g" ? "G" : "c"));
+  if (/\d$/.test(t) && !/mm2$/.test(t)) t += "mm2";
+  t = t.replace(/(\d)\s*mm2/, "$1mm2");
+  return t;
+}
+var PREFIX_ORDER = ["L", "CE", "LC", "E"];
+function sortKey(ref) {
+  const m = ref.match(/^([A-Z]+)\d{2}[A-Z]{2}([0-9X]+)(?:-(\d+))?/) || [];
+  const num = parseInt((m[2] || "").replace(/X/g, "0"), 10) || 0;
+  const p = PREFIX_ORDER.indexOf(m[1]);
+  return [num, m[3] ? +m[3] : 0, p < 0 ? 99 : p];
+}
+function sortRows(a, b) {
+  const ka = sortKey(a.ref), kb = sortKey(b.ref);
+  for (let i = 0; i < 3; i++) if (ka[i] !== kb[i]) return ka[i] - kb[i];
+  return a.ref.localeCompare(b.ref);
+}
+var DEFAULT_RULES = {
+  fullName,
+  // 'supply-first': Source = supplying end (panel/MDB/JB), Destination = load/field end
+  // 'field-first' : Source = field end, Destination = panel (the reverse)
+  direction: "supply-first",
+  bandVoltage: BAND_VOLTAGE,
+  prefixBand: { L: "B2", LC: "B2", CE: "B1" },
+  sortRows
+};
+
+// src/engine.js
+var REF_RE = /^([A-Z]{1,3}\d{2}[A-Z]{2}[0-9X]{3,5}(?:-\d+)?)\s*(?:\(\s*(B\d(?:\s*[&+\/]\s*B\d)?)\s*\))?$/;
+var BAND_RE = /^\(\s*(B\d(?:\s*[&+\/]\s*B\d)?)\s*\)$/;
+var DWG_RE = /\d{6,}-\d{2}-[A-Z]{2,4}-\d{4,6}-[A-Z]{2}-[A-Z]{2}-[A-Z]-\d{4,6}/;
+var NOISE_RE = /^(P|C|E|M|H|TH|SL|VSD|DOL|f\d|\d~|NOTE\s*\d+|LIT\d+|[\d.]+\s*kW)$/i;
+var dist = (ax, ay, bx, by) => Math.hypot(ax - bx, ay - by);
+var isV = (s) => Math.abs(s.x1 - s.x2) < 0.6;
+var isH = (s) => Math.abs(s.y1 - s.y2) < 0.6;
+var segLen = (s) => dist(s.x1, s.y1, s.x2, s.y2);
+function ptSegDist(px, py, s) {
+  const vx = s.x2 - s.x1, vy = s.y2 - s.y1;
+  const L2 = vx * vx + vy * vy || 1;
+  let t = ((px - s.x1) * vx + (py - s.y1) * vy) / L2;
+  t = Math.max(0, Math.min(1, t));
+  return dist(px, py, s.x1 + t * vx, s.y1 + t * vy);
+}
+function boxDist(px, py, b) {
+  const dx = Math.max(b.x0 - px, 0, px - b.x1);
+  const dy = Math.max(b.y0 - py, 0, py - b.y1);
+  return Math.hypot(dx, dy);
+}
+var inside = (px, py, b, pad = 0) => px >= b.x0 - pad && px <= b.x1 + pad && py >= b.y0 - pad && py <= b.y1 + pad;
+function findRects(segs) {
+  const H = segs.filter(isH).map((s) => ({ y: s.y1, x0: Math.min(s.x1, s.x2), x1: Math.max(s.x1, s.x2), s }));
+  const V = segs.filter(isV).map((s) => ({ x: s.x1, y0: Math.min(s.y1, s.y2), y1: Math.max(s.y1, s.y2), s }));
+  const tol = 1.5;
+  const rects = [];
+  const vAt = (x, y0, y1) => V.find((v) => Math.abs(v.x - x) < tol && v.y0 <= y0 + tol && v.y1 >= y1 - tol);
+  for (let i = 0; i < H.length; i++) {
+    const a = H[i];
+    if (a.x1 - a.x0 < 8) continue;
+    for (let j = 0; j < H.length; j++) {
+      const b = H[j];
+      if (b.y <= a.y + 4 || b.y - a.y > 200) continue;
+      if (Math.abs(a.x0 - b.x0) > tol || Math.abs(a.x1 - b.x1) > tol) continue;
+      const l = vAt(a.x0, a.y, b.y), r = vAt(a.x1, a.y, b.y);
+      if (l || r) rects.push({ x0: a.x0, y0: a.y, x1: a.x1, y1: b.y, edges: [a.s, b.s, l?.s, r?.s].filter(Boolean), open: !(l && r) });
+    }
+  }
+  const out = [];
+  for (const r of rects) if (!out.some((o) => Math.abs(o.x0 - r.x0) < 1 && Math.abs(o.y0 - r.y0) < 1 && Math.abs(o.x1 - r.x1) < 1 && Math.abs(o.y1 - r.y1) < 1)) out.push(r);
+  return out;
+}
+function readTitleBlock(texts) {
+  const find = (re) => texts.find((t) => re.test(t.str));
+  const below = (cap, maxDx = 260, maxDy = 40, filter = () => true) => {
+    if (!cap) return "";
+    const c = texts.filter((t) => t !== cap && t.angle === 0 && t.y0 > cap.y0 + 2 && t.y0 - cap.y1 < maxDy && t.x0 > cap.x0 - 15 && t.x0 < cap.x0 + maxDx && filter(t)).sort((a, b) => a.y0 - b.y0 || a.x0 - b.x0);
+    return c.length ? c[0].str : "";
+  };
+  const sameRowRight = (cap, maxDx = 300) => {
+    if (!cap) return "";
+    const c = texts.filter((t) => t !== cap && t.angle === 0 && Math.abs(t.cy - cap.cy) < cap.size * 0.8 && t.x0 > cap.x1 && t.x0 - cap.x1 < maxDx).sort((a, b) => a.x0 - b.x0);
+    return c.length ? c[0].str : "";
+  };
+  const wbCap = find(/^W&B DRAWING No/i), clCap = find(/^CLIENT DRAWING No/i);
+  const revCap = find(/^REV:?$/i), titleCap = find(/^TITLE:?$/i), projCap = find(/^PROJECT:?$/i);
+  const pnCap = find(/^PROJECT NUMBER/i), suitCap = find(/^SUITABILITY CODE/i);
+  const any = (re) => (texts.find((t) => re.test(t.str)) || {}).str || "";
+  return {
+    wbNumber: below(wbCap, 200, 30, (t) => /[A-Z]{3,}-/.test(t.str)) || any(/^[A-Z]+-WAB-\d{2}-/),
+    clientNumber: (below(clCap, 220, 30, (t) => DWG_RE.test(t.str)).match(DWG_RE) || [""])[0],
+    revision: below(revCap, 60, 30, (t) => /^[A-Z]{1,2}\d{2}$/.test(t.str)),
+    title: below(titleCap, 300, 40) || sameRowRight(titleCap),
+    project: below(projCap, 300, 40) || sameRowRight(projCap),
+    projectNumber: below(pnCap, 200, 30),
+    suitability: below(suitCap, 300, 30),
+    _titleBlockX: Math.min(...[wbCap, clCap, revCap, titleCap, projCap, find(/^NOTES$/), find(/^COPYRIGHT/)].filter(Boolean).map((t) => t.x0))
+  };
+}
+function readStrip(texts, segs) {
+  const desc = texts.find((t) => t.angle === 0 && /^DESCRIPTION$/i.test(t.str));
+  const ref = texts.find((t) => t.angle === 0 && /^REFERENCE$/i.test(t.str));
+  if (!desc || !ref) return null;
+  const left = Math.min(desc.x0, ref.x0) - 6;
+  const hl = segs.filter((s) => isH(s) && Math.min(s.x1, s.x2) < left + 12 && segLen(s) > 200 && s.y1 > ref.y0 - 30 && s.y1 < desc.y1 + 80).map((s) => ({ y: s.y1, x1: Math.max(s.x1, s.x2) }));
+  const right = Math.max(...hl.map((h) => h.x1), desc.x1 + 100);
+  const last = texts.filter((t) => t.angle === 0 && /^(TAG|WAY)$/i.test(t.str) && Math.abs(t.x0 - desc.x0) < 15 && t.cy > desc.cy).sort((a, b) => a.cy - b.cy)[0];
+  const ys = hl.map((h) => h.y).sort((a, b) => a - b);
+  const bottomRef = last ? last.cy : desc.cy;
+  const bottom = ys.filter((y) => y > bottomRef).sort((a, b) => a - b)[0] ?? bottomRef + 8;
+  const top = ys.filter((y) => y < ref.cy).sort((a, b) => b - a)[0] ?? ref.y0 - 4;
+  const descTop = ys.filter((y) => y < desc.cy).sort((a, b) => b - a)[0] ?? desc.y0 - 6;
+  const descBot = ys.filter((y) => y > desc.cy).sort((a, b) => a - b)[0] ?? desc.y1 + 6;
+  const refBot = ys.filter((y) => y > ref.cy).sort((a, b) => a - b)[0] ?? ref.y1 + 4;
+  const refTxt = texts.filter((t) => t.angle === 0 && t !== ref && t.cy > top && t.cy < refBot && t.x0 > ref.x1 && t.x1 < right + 5).map((t) => t.str).join(" ");
+  const name = refTxt.replace(/\s*-\s*FORM\s*\w+\s*$/i, "").trim();
+  const xs = segs.filter((s) => isV(s) && Math.min(s.y1, s.y2) <= desc.cy && Math.max(s.y1, s.y2) >= desc.cy && s.x1 > left && s.x1 <= right + 2).map((s) => s.x1).sort((a, b) => a - b);
+  const bounds = [];
+  for (const x of xs) if (!bounds.length || x - bounds[bounds.length - 1] > 3) bounds.push(x);
+  const descTexts = texts.filter((t) => t.angle === 0 && t !== desc && t.cy > descTop && t.cy < descBot && t.x0 > desc.x1);
+  const column = (x) => {
+    let a = left, b = right;
+    for (const bx of bounds) {
+      if (bx <= x) a = bx;
+      else {
+        b = bx;
+        break;
+      }
+    }
+    const d = descTexts.filter((t) => t.cx > a && t.cx < b).sort((p, q) => p.cy - q.cy).map((t) => t.str).join(" ");
+    return { x0: a, x1: b, description: d };
+  };
+  return { name, rawName: refTxt, x0: left, x1: right, y0: top, y1: bottom, column };
+}
+function buildBlocks(texts) {
+  const n = texts.length, parent = texts.map((_, i) => i);
+  const f = (i) => parent[i] === i ? i : parent[i] = f(parent[i]);
+  for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
+    const a = texts[i], b = texts[j];
+    const [u, l] = a.cy < b.cy ? [a, b] : [b, a];
+    const gap = l.y0 - u.y1;
+    const sz = Math.max(a.size, b.size);
+    const xOverlap = Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0);
+    if (gap < sz * 0.9 && gap > -sz * 0.5 && (xOverlap > -2 || Math.abs(a.cx - b.cx) < sz * 2)) parent[f(i)] = f(j);
+  }
+  const groups = /* @__PURE__ */ new Map();
+  texts.forEach((t, i) => {
+    const r = f(i);
+    if (!groups.has(r)) groups.set(r, []);
+    groups.get(r).push(t);
+  });
+  return [...groups.values()].map((ts) => {
+    ts.sort((a, b) => a.cy - b.cy || a.x0 - b.x0);
+    return {
+      texts: ts,
+      lines: ts.map((t) => t.str),
+      x0: Math.min(...ts.map((t) => t.x0)),
+      y0: Math.min(...ts.map((t) => t.y0)),
+      x1: Math.max(...ts.map((t) => t.x1)),
+      y1: Math.max(...ts.map((t) => t.y1))
+    };
+  });
+}
+function parseSpec(raw) {
+  let s = (raw || "").replace(/\s+/g, " ").trim();
+  if (!s) return { type: "", size: "" };
+  if (/VENDOR\s*CABLE/i.test(s)) {
+    const rest = s.replace(/VENDOR\s*CABLE/i, "").trim();
+    return { type: "VENDOR CABLE", size: rest ? normaliseSize(rest) : "VENDOR CABLE" };
+  }
+  if (/SUBCAB/i.test(s)) {
+    return { type: "SUBCAB", size: s.trim() };
+  }
+  const m = s.match(/((?:\d+\s*[x×]\s*)?\d+\s*(?:c|pr|g)\s*[x×]\s*\d+(?:\.\d+)?\s*(?:mm²|mm2|mm)?)/i);
+  if (m) {
+    const type = (s.slice(0, m.index) + " " + s.slice(m.index + m[0].length)).replace(/\s+/g, " ").trim();
+    return { type, size: normaliseSize(m[1]) };
+  }
+  return { type: s, size: "" };
+}
+function extractDrawing(geom, fileName = "", rules = DEFAULT_RULES) {
+  const { texts, segs } = geom;
+  const issues = [];
+  const tb = readTitleBlock(texts);
+  const tbX = isFinite(tb._titleBlockX) ? tb._titleBlockX - 5 : Infinity;
+  const strip = readStrip(texts.filter((t) => t.x1 < tbX), segs);
+  const inStrip = (x, y) => strip && x > strip.x0 && x < strip.x1 && y > strip.y0 - 2 && y < strip.y1 + 1;
+  const rects = findRects(segs).filter((r) => r.x1 < tbX && !(strip && r.y0 >= strip.y0 - 2 && r.y1 <= strip.y1 + 2)).filter((r) => !r.open || texts.some((t) => t.angle === 0 && inside(t.cx, t.cy, r) && /[A-Za-z]/.test(t.str) && !REF_RE.test(t.str)));
+  const rectEdge = new Set(rects.flatMap((r) => r.edges));
+  const dTexts = texts.filter((t) => t.x1 < tbX && !inStrip(t.cx, t.cy));
+  const used = /* @__PURE__ */ new Set();
+  const labels = [];
+  for (const t of dTexts) {
+    const m = t.str.replace(/\s+/g, " ").match(REF_RE);
+    if (!m) continue;
+    labels.push({ t, ref: m[1], band: m[2] ? m[2].replace(/\s+/g, "").replace(/[+\/]/, "&") : "" });
+    used.add(t);
+  }
+  for (const L of labels) if (!L.band) {
+    const b = dTexts.find((t) => BAND_RE.test(t.str) && !used.has(t) && t.angle === L.t.angle && (L.t.angle === 0 ? Math.abs(t.cy - L.t.cy) < 4 && t.x0 - L.t.x1 < 45 && t.x0 > L.t.x0 : Math.abs(t.cx - L.t.cx) < 4 && boxDist(t.cx, t.cy, L.t) < 45));
+    if (b) {
+      L.band = b.str.match(BAND_RE)[1].replace(/\s+/g, "");
+      used.add(b);
+    }
+  }
+  const cableSegs = segs.filter((s) => !rectEdge.has(s) && !(strip && inStrip((s.x1 + s.x2) / 2, (s.y1 + s.y2) / 2) && !isV(s)));
+  const pickLine = (L) => {
+    const t = L.t, sz = t.size;
+    let best = null, bestD = Infinity;
+    for (const s of cableSegs) {
+      if (segLen(s) < 6) continue;
+      let d = Infinity;
+      if (Math.abs(t.angle) === 90 && isV(s)) {
+        const y0 = Math.min(s.y1, s.y2), y1 = Math.max(s.y1, s.y2);
+        if (y1 < t.y0 - 5 || y0 > t.y1 + 5) continue;
+        d = s.x1 >= t.x1 ? s.x1 - t.x1 : s.x1 <= t.x0 ? t.x0 - s.x1 : 0;
+        if (d > sz * 1.6) continue;
+      } else if (t.angle === 0 && isH(s)) {
+        const x0 = Math.min(s.x1, s.x2), x1 = Math.max(s.x1, s.x2);
+        if (x1 < t.x0 + 2 || x0 > t.x1 - 2) continue;
+        d = s.y1 >= t.y1 ? s.y1 - t.y1 : s.y1 <= t.y0 ? t.y0 - s.y1 : 0;
+        if (d > sz * 1.2) continue;
+      } else if (t.angle === 0 && isV(s)) {
+        const y0 = Math.min(s.y1, s.y2), y1 = Math.max(s.y1, s.y2);
+        if (y1 < t.y0 || y0 > t.y1) continue;
+        d = s.x1 <= t.x0 ? t.x0 - s.x1 : s.x1 >= t.x1 ? s.x1 - t.x1 : Infinity;
+        if (d > sz * 1.2) continue;
+        d += 0.5;
+      } else continue;
+      if (d < bestD) {
+        bestD = d;
+        best = s;
+      }
+    }
+    return best;
+  };
+  const key = (x, y) => `${Math.round(x)}_${Math.round(y)}`;
+  const touchesAt = (x, y, exclude) => cableSegs.filter((s) => !exclude.has(s) && (dist(x, y, s.x1, s.y1) < 1.6 || dist(x, y, s.x2, s.y2) < 1.6));
+  const walk = (s, fromEnd) => {
+    const seen = /* @__PURE__ */ new Set([s]);
+    let cur = s, px = fromEnd ? s.x2 : s.x1, py = fromEnd ? s.y2 : s.y1;
+    let qx = fromEnd ? s.x1 : s.x2, qy = fromEnd ? s.y1 : s.y2;
+    for (let step = 0; step < 40; step++) {
+      let next = touchesAt(px, py, seen).filter((n2) => segLen(n2) > 1);
+      if (next.length !== 1) {
+        const ux = px - qx, uy = py - qy, ul = Math.hypot(ux, uy) || 1;
+        const gap = cableSegs.filter((n2) => !seen.has(n2) && (isV(n2) && isV(cur) && Math.abs(n2.x1 - px) < 0.8 || isH(n2) && isH(cur) && Math.abs(n2.y1 - py) < 0.8)).map((n2) => {
+          const dA = dist(px, py, n2.x1, n2.y1), dB = dist(px, py, n2.x2, n2.y2);
+          const near = dA < dB ? [n2.x1, n2.y1] : [n2.x2, n2.y2];
+          const ahead = ((near[0] - px) * ux + (near[1] - py) * uy) / ul;
+          return { n: n2, d: Math.min(dA, dB), ahead };
+        }).filter((g) => g.ahead > 0 && g.d < 14).sort((a, b) => a.d - b.d);
+        if (next.length === 0 && gap.length) next = [gap[0].n];
+        else break;
+      }
+      const n = next[0];
+      seen.add(n);
+      const farFirst = dist(px, py, n.x1, n.y1) > dist(px, py, n.x2, n.y2);
+      qx = farFirst ? n.x2 : n.x1;
+      qy = farFirst ? n.y2 : n.y1;
+      px = farFirst ? n.x1 : n.x2;
+      py = farFirst ? n.y1 : n.y2;
+      cur = n;
+    }
+    const dl = Math.hypot(px - qx, py - qy) || 1;
+    return { x: px, y: py, dx: (px - qx) / dl, dy: (py - qy) / dl, path: seen };
+  };
+  const blockTexts = dTexts.filter((t) => t.angle === 0 && !used.has(t) && !BAND_RE.test(t.str));
+  let blocks = null;
+  const nodeAt = (end, path) => {
+    const { x, y, dx, dy } = end;
+    if (strip && x > strip.x0 && x < strip.x1 && y > strip.y0 - 2 && y < strip.y1 + 22) {
+      return { kind: "panel", name: strip.name, way: strip.column(x).description };
+    }
+    const r = rects.find((r2) => r2.edges.some((e) => ptSegDist(x, y, e) < 2));
+    if (r) {
+      const inner = dTexts.filter((t) => inside(t.cx, t.cy, r) && !used.has(t)).sort((a, b) => a.cy - b.cy || a.x0 - b.x0);
+      const words = inner.map((t) => t.str).filter((s) => !NOISE_RE.test(s));
+      if (words.length) {
+        if (strip && r.y0 - strip.y1 < 30 && r.x0 > strip.x0 && r.x1 < strip.x1)
+          return { kind: "panel", name: strip.name, way: strip.column((r.x0 + r.x1) / 2).description };
+        return { kind: "box", name: words.join(" "), box: r, first: inner.find((t) => !NOISE_RE.test(t.str)) };
+      }
+    }
+    let best = null, bestScore = Infinity;
+    for (const b of blocks) {
+      const d = boxDist(x, y, b);
+      const bx = (b.x0 + b.x1) / 2, by = (b.y0 + b.y1) / 2;
+      const along = (bx - x) * dx + (by - y) * dy;
+      const lim = along > 0 ? 260 : 70;
+      if (d > lim) continue;
+      const score = d * (along > 0 ? 1 : 2.5);
+      if (score < bestScore) {
+        bestScore = score;
+        best = b;
+      }
+    }
+    if (best) {
+      const raw = best.lines.filter((s) => !NOISE_RE.test(s));
+      const joined = raw.join(" ");
+      if (/^(FROM|TO|SEE)\s+DRAWING/i.test(joined)) {
+        const num = (raw.slice(1).join("").replace(/\s+/g, "").match(DWG_RE) || [""])[0];
+        const note = (joined.match(/\(([^)]*)\)\s*$/) || ["", ""])[1];
+        const verb = joined.match(/^(FROM|TO|SEE)/i)[1].toUpperCase();
+        return { kind: "offsheet", verb, drawing: num, note, name: "", text: joined, block: best };
+      }
+      if (/^FROM\s+DNO$/i.test(joined) || /^DNO\b/i.test(joined)) return { kind: "dno", name: "DNO", block: best };
+      if (/CONTROLLER/i.test(joined) && strip && best.y0 - strip.y1 < 40 && best.x0 > strip.x0 && best.x1 < strip.x1)
+        return { kind: "panel", name: strip.name, way: strip.column((best.x0 + best.x1) / 2).description };
+      return { kind: "device", name: joined, block: best, first: best.texts.find((t) => !NOISE_RE.test(t.str)) };
+    }
+    return { kind: "unknown", name: "", at: [Math.round(x), Math.round(y)] };
+  };
+  const finishNode = (n) => {
+    if (n.first) {
+      n.key = `${Math.round(n.first.x0)}_${Math.round(n.first.y0)}`;
+      if (/^CONTROLLER$/i.test(n.name)) {
+        const tag = dTexts.filter((t) => /^LIT\d+$/i.test(t.str)).map((t) => ({ t, d: boxDist(t.cx, t.cy, n.first) })).filter((o) => o.d < 80).sort((a, b) => a.d - b.d)[0];
+        if (tag) n.name = `Controller ${tag.t.str}`;
+        n.kind = "box";
+      }
+    }
+    delete n.box;
+    delete n.block;
+    delete n.first;
+  };
+  const specOf = (L, line) => {
+    const t = L.t, sz = t.size;
+    let cand = [];
+    if (Math.abs(t.angle) === 90 && line && isV(line)) {
+      const side = line.x1 >= t.cx ? 1 : -1;
+      cand = dTexts.filter((u) => !used.has(u) && u.angle === t.angle && !REF_RE.test(u.str) && !BAND_RE.test(u.str) && (side > 0 ? u.x0 >= line.x1 - 1.5 && u.x0 - line.x1 < sz * 2.6 : u.x1 <= line.x1 + 1.5 && line.x1 - u.x1 < sz * 2.6) && Math.min(u.y1, t.y1 + 60) - Math.max(u.y0, t.y0 - 60) > 0).sort((a, b) => side * (a.cx - b.cx));
+    } else {
+      cand = dTexts.filter((u) => !used.has(u) && u.angle === 0 && u !== t && !REF_RE.test(u.str) && !BAND_RE.test(u.str) && u.y0 >= t.y1 - 1 && u.y0 - t.y1 < sz * 1.9 && Math.min(u.x1, t.x1 + 40) - Math.max(u.x0, t.x0 - 40) > 0).sort((a, b) => a.cy - b.cy).slice(0, 1);
+      cand = cand.filter((u) => /(mm|PR|\dc\b|\dc\s|VENDOR|SUBCAB|XLPE|SWA|BS\d|G&Y|-Y|-X|\dG\d)/i.test(u.str));
+    }
+    const out = [];
+    for (const u of cand) {
+      const mine = boxDist(u.cx, u.cy, t);
+      const other = labels.some((o) => o !== L && o.t.angle === t.angle && boxDist(u.cx, u.cy, o.t) < mine - 1);
+      if (other) continue;
+      out.push(u);
+      if (out.length >= 2) break;
+    }
+    out.forEach((u) => used.add(u));
+    return out.map((u) => u.str).join(" ");
+  };
+  const resolved = [];
+  for (const L of labels) {
+    let line = pickLine(L);
+    L.line = line;
+  }
+  for (const L of labels) L.specRaw = specOf(L, L.line);
+  blocks = buildBlocks(blockTexts.filter((t) => !used.has(t) && !NOISE_RE.test(t.str) && /[A-Za-z]/.test(t.str) && t.str.length > 1));
+  for (const L of labels) {
+    const rec = { ref: L.ref, band: L.band, ...parseSpec(L.specRaw), specRaw: L.specRaw, ends: [], flags: [], at: [Math.round(L.t.cx), Math.round(L.t.cy)] };
+    let line = L.line;
+    if (!line) {
+      rec.flags.push("No cable line found next to label");
+      resolved.push(rec);
+      continue;
+    }
+    let A = walk(line, false), B = walk(line, true);
+    const pathLen = [.../* @__PURE__ */ new Set([...A.path, ...B.path])].reduce((a, s) => a + segLen(s), 0);
+    const all = /* @__PURE__ */ new Set([...A.path, ...B.path]);
+    const rayHit = (e) => {
+      let best = null, bd = Infinity;
+      for (const s of cableSegs) {
+        if (all.has(s) || segLen(s) < 20) continue;
+        for (let k = 0; k <= 14; k += 0.5) {
+          const px = e.x + e.dx * k, py = e.y + e.dy * k;
+          if (ptSegDist(px, py, s) < 0.8 && dist(px, py, s.x1, s.y1) > 2 && dist(px, py, s.x2, s.y2) > 2) {
+            if (k < bd) {
+              bd = k;
+              best = s;
+            }
+            break;
+          }
+        }
+      }
+      return best;
+    };
+    if (pathLen < 160 && L.t.angle === 0) {
+      const hit = rayHit(A) || rayHit(B);
+      if (hit) {
+        line = hit;
+        A = walk(line, false);
+        B = walk(line, true);
+        rec.flags.push("Label attached by leader arrow \u2014 check it points at the right cable");
+      }
+    }
+    const nA = nodeAt(A, A.path), nB = nodeAt(B, B.path);
+    nA.pos = [Math.round(A.x), Math.round(A.y)];
+    nB.pos = [Math.round(B.x), Math.round(B.y)];
+    for (const n of [nA, nB]) finishNode(n);
+    rec.ends = [nA, nB];
+    for (const n of rec.ends) if (n.kind === "unknown") rec.flags.push(`Could not identify the equipment at the cable end near (${n.at.join(", ")})`);
+    resolved.push(rec);
+  }
+  return {
+    file: fileName,
+    drawing: { ...tb, _titleBlockX: void 0 },
+    panel: strip ? { name: strip.name, rawName: strip.rawName } : null,
+    cables: resolved,
+    issues
+  };
+}
+var RANK = (n) => n.kind === "dno" ? 0 : n.kind === "panel" ? /INCOMER|\bFROM\b/i.test(n.way || "") ? 4 : 0 : n.kind === "offsheet" ? 1 : n.kind === "box" ? 2 : 3;
+function mergeDrawings(drawings, rules = DEFAULT_RULES) {
+  const byClient = /* @__PURE__ */ new Map();
+  for (const d of drawings) if (d.drawing.clientNumber) byClient.set(d.drawing.clientNumber, d);
+  const sheetOf = (d) => d.drawing.wbNumber || d.file;
+  const alias = /* @__PURE__ */ new Map();
+  const all = [];
+  for (const d of drawings) for (const c of d.cables) all.push({ c, d });
+  for (const { c, d } of all) for (const n of c.ends) {
+    if (n.kind !== "offsheet" || !n.note) continue;
+    const target = byClient.get(n.drawing);
+    if (!target) continue;
+    const noteName = n.note.replace(/^TO\s+|^FROM\s+/i, "").trim();
+    const twin = target.cables.find((x) => x.ref === c.ref);
+    if (!twin) continue;
+    for (const m of twin.ends) if (m.key && m.kind !== "panel" && m.kind !== "offsheet") {
+      const firstWord = (m.name.split(/\s+/)[0] || "").toLowerCase();
+      if (firstWord && noteName.toLowerCase().includes(firstWord)) alias.set(sheetOf(target) + "|" + m.key, noteName);
+    }
+  }
+  const nameOf = (n, d) => {
+    if (n.kind === "offsheet") {
+      const target = byClient.get(n.drawing);
+      return target && target.panel ? rules.fullName(target.panel.name) : "";
+    }
+    const a = n.key && alias.get(sheetOf(d) + "|" + n.key);
+    return rules.fullName(a || n.name);
+  };
+  const groups = /* @__PURE__ */ new Map();
+  for (const x of all) {
+    if (!groups.has(x.c.ref)) groups.set(x.c.ref, []);
+    groups.get(x.c.ref).push(x);
+  }
+  const rows = [];
+  for (const [ref, inst] of groups) {
+    const flags = [];
+    const ends = [];
+    const srcVotes = /* @__PURE__ */ new Map();
+    const seenSign = /* @__PURE__ */ new Map();
+    const vote = (name, v) => {
+      if (!name) return;
+      const k = name.toLowerCase();
+      srcVotes.set(k, (srcVotes.get(k) || 0) + v);
+      seenSign.set(k, (seenSign.get(k) || /* @__PURE__ */ new Set()).add(Math.sign(v)));
+    };
+    for (const { c, d } of inst) {
+      for (const n of c.ends) {
+        ends.push({ ...n, full: nameOf(n, d), sheet: sheetOf(d) });
+        if (n.kind === "offsheet" && !byClient.has(n.drawing)) flags.push(`Refers to drawing ${n.drawing || "(unreadable number)"} which was not uploaded`);
+      }
+      const off = c.ends.find((n) => n.kind === "offsheet" && n.verb !== "SEE");
+      const local = c.ends.find((n) => n !== off);
+      if (off && local) {
+        const far = nameOf(off, d), here = nameOf(local, d);
+        if (off.verb === "FROM") {
+          vote(far, 1);
+          vote(here, -1);
+        } else {
+          vote(here, 1);
+          vote(far, -1);
+        }
+      }
+      flags.push(...c.flags);
+    }
+    const concrete = [];
+    for (const e of ends.filter((e2) => e2.kind !== "offsheet" && e2.full)) if (!concrete.some((x) => x.full.toLowerCase() === e.full.toLowerCase())) concrete.push(e);
+    const pair = concrete.slice(0, 2);
+    if (concrete.length > 2) flags.push(`More than two ends found: ${concrete.map((e) => e.full).join(" / ")}`);
+    for (const e of ends.filter((e2) => e2.kind === "offsheet")) {
+      if (pair.length >= 2) break;
+      const nm = e.full || (e.drawing ? `Drawing ${e.drawing}` : e.text);
+      if (!pair.some((p) => p.full.toLowerCase() === nm.toLowerCase())) pair.push({ ...e, full: nm });
+    }
+    while (pair.length < 2) pair.push({ kind: "unknown", full: "" });
+    const v0 = srcVotes.get(pair[0].full.toLowerCase()) || 0, v1 = srcVotes.get(pair[1].full.toLowerCase()) || 0;
+    const votesAgree = [...seenSign.values()].every((set) => set.size === 1);
+    if (v0 !== v1 && votesAgree) {
+      if (v1 > v0) pair.reverse();
+    } else {
+      pair.sort((a, b) => RANK(a) - RANK(b) || (Math.abs((a.pos?.[1] ?? 0) - (b.pos?.[1] ?? 0)) > 3 ? (a.pos?.[1] ?? 0) - (b.pos?.[1] ?? 0) : (a.pos?.[0] ?? 0) - (b.pos?.[0] ?? 0)));
+      if (!votesAgree) flags.push("Drawings disagree on direction (both say FROM or both say TO) \u2014 check source/destination");
+    }
+    const pick = (k, label) => {
+      const vals = [...new Set(inst.map((i) => i.c[k]).filter(Boolean))];
+      if (vals.length > 1) flags.push(`${label} differs between drawings: ${vals.map((v, i) => v).join(" vs ")} (${inst.filter((i) => i.c[k]).map((i) => sheetOf(i.d)).join(" vs ")})`);
+      return vals[0] || "";
+    };
+    if (rules.direction === "field-first") pair.reverse();
+    let band = pick("band", "Band");
+    const type = pick("type", "Cable type"), size = pick("size", "Size");
+    const pre = (ref.match(/^[A-Z]+/) || [""])[0];
+    const expect = rules.prefixBand[pre];
+    if (!band && expect) {
+      band = expect;
+      flags.push(`Band not shown on drawing \u2014 assumed ${expect} from prefix ${pre}`);
+    } else if (!band) flags.push("No voltage band on drawing");
+    else if (expect && !band.split("&").includes(expect)) flags.push(`Prefix ${pre} is normally ${expect}, drawing says ${band}`);
+    if (!size) flags.push("No core/size found");
+    if (!type) flags.push("No cable type found");
+    if (!pair[0].full || !pair[1].full) flags.push("Source or destination missing");
+    rows.push({
+      ref,
+      source: pair[0].full,
+      destination: pair[1].full,
+      type,
+      size,
+      voltage: voltageForBand(band, rules),
+      band,
+      length: "",
+      cpc: "",
+      install: "",
+      comments: "",
+      sheets: [...new Set(inst.map((i) => sheetOf(i.d)))],
+      flags: [...new Set(flags)]
+    });
+  }
+  rows.sort(rules.sortRows);
+  return { rows };
+}
+
+// src/excel.js
+var COLUMNS = ["ref", "source", "destination", "type", "size", "voltage", "band", "length", "cpc", "install", "comments"];
+var FIRST_ROW = 6;
+var SHEET = "Cable Schedule";
+async function buildWorkbook(ExcelJS, templateBuffer, header2, rows) {
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(templateBuffer);
+  const ws = wb.getWorksheet(SHEET) || wb.worksheets[0];
+  for (const other of [...wb.worksheets]) if (other.id !== ws.id) wb.removeWorksheet(other.id);
+  ws.getCell("I1").value = header2.projectTitle || "";
+  ws.getCell("I2").value = header2.projectNumber || "";
+  ws.getCell("I3").value = header2.documentNumber || "";
+  ws.getCell("I4").value = header2.revision || "";
+  ws.getCell("A3").value = header2.projectTitle || "";
+  const proto = ws.getRow(FIRST_ROW);
+  const styles = COLUMNS.map((_, i) => JSON.parse(JSON.stringify(proto.getCell(i + 1).style || {})));
+  const height = proto.height;
+  for (let r = FIRST_ROW; r <= Math.max(ws.rowCount, FIRST_ROW + rows.length); r++)
+    for (let c = 1; c <= COLUMNS.length; c++) ws.getRow(r).getCell(c).value = null;
+  rows.forEach((row, i) => {
+    const r = ws.getRow(FIRST_ROW + i);
+    COLUMNS.forEach((k, c) => {
+      const cell = r.getCell(c + 1);
+      cell.value = row[k] === "" || row[k] == null ? null : row[k];
+      cell.style = JSON.parse(JSON.stringify(styles[c]));
+    });
+    if (height) r.height = height;
+  });
+  const last = FIRST_ROW + Math.max(rows.length, 1) - 1;
+  ws.pageSetup = { ...ws.pageSetup || {}, printArea: `A1:K${last}` };
+  return wb.xlsx.writeBuffer();
+}
+
+// src/app.js
+pdfjs.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.worker.min.mjs";
+var $ = (s) => document.querySelector(s);
+var state = { drawings: [], rows: [], template: null, templateName: "Built-in template", onlyFlagged: false };
+var HEAD = ["Cable ref", "Source", "Destination", "Cable type", "Cores & size", "Voltage", "Band"];
+var EDITABLE = ["ref", "source", "destination", "type", "size", "voltage", "band"];
+function b64ToBuf(b64) {
+  const bin = atob(b64);
+  const u = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+  return u.buffer;
+}
+state.template = b64ToBuf(document.getElementById("template-b64").textContent.trim());
+var esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+var status = (msg, kind = "") => {
+  const el = $("#status");
+  el.textContent = msg;
+  el.dataset.kind = kind;
+};
+async function readFiles(files) {
+  const pdfs = [...files].filter((f) => /\.pdf$/i.test(f.name));
+  if (!pdfs.length) {
+    status("Those files are not PDFs. Drop the BCD PDFs exported from AutoCAD.", "bad");
+    return;
+  }
+  for (const [i, f] of pdfs.entries()) {
+    status(`Reading ${f.name} (${i + 1} of ${pdfs.length})\u2026`);
+    try {
+      const doc = await pdfjs.getDocument({ data: new Uint8Array(await f.arrayBuffer()), verbosity: 0 }).promise;
+      for (let p = 1; p <= doc.numPages; p++) {
+        const geom = await readPage(pdfjs, await doc.getPage(p));
+        const d = extractDrawing(geom, doc.numPages > 1 ? `${f.name} (page ${p})` : f.name);
+        d.warn = [];
+        if (geom.texts.length < 10) d.warn.push("No text layer: looks like a scanned PDF. Export it again from AutoCAD as a vector PDF.");
+        else if (!d.panel) d.warn.push("No board header strip found (REFERENCE / DESCRIPTION rows).");
+        if (!d.cables.length && geom.texts.length >= 10) d.warn.push("No cable references found.");
+        if (!d.drawing.clientNumber) d.warn.push("Client drawing number not found, so links from other sheets to this one cannot be resolved.");
+        state.drawings = state.drawings.filter((x) => x.file !== d.file && !(d.drawing.wbNumber && x.drawing.wbNumber === d.drawing.wbNumber));
+        state.drawings.push(d);
+      }
+    } catch (e) {
+      console.error(e);
+      status(`Could not read ${f.name}: ${e.message || e}`, "bad");
+    }
+  }
+  fillHeaderDefaults();
+  remerge();
+  status(`Read ${state.drawings.length} drawing${state.drawings.length === 1 ? "" : "s"}.`, "good");
+}
+function fillHeaderDefaults() {
+  const d = state.drawings.find((x) => x.drawing.project || x.drawing.clientNumber);
+  if (!d) return;
+  const set = (id, v) => {
+    const el = $(id);
+    if (!el.value && v) el.value = v;
+  };
+  set("#h-title", d.drawing.project);
+  const m = (d.drawing.clientNumber || "").match(/^(\d+-\d+)/);
+  set("#h-number", m ? m[1] : "");
+}
+function remerge() {
+  const rules = { ...DEFAULT_RULES, direction: $("#direction").value };
+  state.rows = mergeDrawings(state.drawings, rules).rows;
+  render();
+}
+function render() {
+  const dl = $("#drawings");
+  dl.innerHTML = state.drawings.length ? state.drawings.map((d, i) => `
+    <li class="dwg">
+      <div class="dwg-main">
+        <strong>${esc(d.drawing.title || d.file)}</strong>
+        <span class="mono">${esc(d.drawing.wbNumber || "\u2014")}</span>
+        <span class="mono muted">Client ${esc(d.drawing.clientNumber || "\u2014")} \xB7 Rev ${esc(d.drawing.revision || "\u2014")}</span>
+        <span class="muted">${esc(d.panel ? fullName(d.panel.name) : "No panel found")} \xB7 ${d.cables.length} cable label${d.cables.length === 1 ? "" : "s"}</span>
+        ${d.warn.map((w) => `<span class="warn">${esc(w)}</span>`).join("")}
+      </div>
+      <button class="ghost small" data-remove="${i}" aria-label="Remove ${esc(d.file)}">Remove</button>
+    </li>`).join("") : '<li class="empty">No drawings yet.</li>';
+  const flagged = state.rows.filter((r) => r.flags.length).length;
+  $("#t-dwg").textContent = state.drawings.length;
+  $("#t-rows").textContent = state.rows.length;
+  $("#t-flag").textContent = flagged;
+  $("#tile-flag").dataset.kind = flagged ? "warn" : "good";
+  const rows = state.onlyFlagged ? state.rows.filter((r) => r.flags.length) : state.rows;
+  $("#thead").innerHTML = `<tr><th class="sev" aria-label="Status"></th>${HEAD.map((h) => `<th>${h}</th>`).join("")}<th>Sheets</th><th>Check</th></tr>`;
+  $("#tbody").innerHTML = rows.length ? rows.map((r) => {
+    const i = state.rows.indexOf(r);
+    return `<tr class="${r.flags.length ? "flagged" : ""}">
+      <td class="sev"><span class="dot" title="${r.flags.length ? "Needs checking" : "OK"}"></span></td>
+      ${EDITABLE.map((k) => `<td contenteditable="true" spellcheck="false" data-i="${i}" data-k="${k}" class="${k === "ref" || k === "size" ? "mono" : ""}">${esc(r[k])}</td>`).join("")}
+      <td class="sheets mono muted">${r.sheets.map((s) => esc(s.replace(/^.*-W-/, "W-"))).join("<br>")}</td>
+      <td class="flags">${r.flags.map((f) => `<span class="chip">${esc(f)}</span>`).join("")}</td>
+    </tr>`;
+  }).join("") : `<tr><td colspan="10" class="empty">${state.rows.length ? "No rows need checking." : "Drop BCD PDFs above to build the schedule."}</td></tr>`;
+  const ready = state.rows.length > 0;
+  for (const b of document.querySelectorAll("[data-needs-rows]")) b.disabled = !ready;
+}
+var downloadsApi;
+async function saveFile(filename, data) {
+  if (downloadsApi === void 0 && window.claude?.use) {
+    try {
+      downloadsApi = await window.claude.use("downloads");
+    } catch {
+      downloadsApi = null;
+    }
+  }
+  if (downloadsApi) {
+    try {
+      await downloadsApi.save({ filename, data });
+      status(`Saved ${filename}.`, "good");
+    } catch (e) {
+      status(e?.code === "declined" ? "Download cancelled." : `Could not save: ${e?.message || e?.code}`, e?.code === "declined" ? "" : "bad");
+    }
+    return;
+  }
+  const blob = data instanceof Blob ? data : new Blob([data]);
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4e3);
+  status(`Downloaded ${filename}.`, "good");
+}
+var header = () => ({
+  projectTitle: $("#h-title").value.trim(),
+  projectNumber: $("#h-number").value.trim(),
+  documentNumber: $("#h-doc").value.trim(),
+  revision: $("#h-rev").value.trim()
+});
+var safeName = (s) => (s || "Cable_Schedule").replace(/[^\w.-]+/g, "_");
+async function exportXlsx() {
+  const unresolved = state.rows.filter((r) => r.flags.length).length;
+  status("Building the Excel file\u2026");
+  const buf = await buildWorkbook(window.ExcelJS, state.template.slice(0), header(), state.rows);
+  const h = header();
+  await saveFile(`${safeName(h.documentNumber || h.projectTitle + "_Cable_Schedule")}.xlsx`, new Blob([buf]));
+  if (unresolved) status(`Excel file ready. ${unresolved} row${unresolved === 1 ? "" : "s"} still marked for checking.`, "warn");
+}
+function exportJson() {
+  const out = { generated: (/* @__PURE__ */ new Date()).toISOString(), header: header(), drawings: state.drawings.map((d) => ({ file: d.file, drawing: d.drawing, panel: d.panel, cables: d.cables })), rows: state.rows };
+  saveFile(`${safeName(header().projectTitle)}_cables.json`, JSON.stringify(out, null, 2));
+}
+function exportReview() {
+  const q = (s) => `"${String(s ?? "").replace(/"/g, '""')}"`;
+  const lines = [["Cable ref", "Source", "Destination", "Check"].map(q).join(",")];
+  for (const r of state.rows) for (const f of r.flags) lines.push([r.ref, r.source, r.destination, f].map(q).join(","));
+  saveFile(`${safeName(header().projectTitle)}_review_list.csv`, lines.join("\r\n"));
+}
+var drop = $("#drop");
+["dragenter", "dragover"].forEach((ev) => drop.addEventListener(ev, (e) => {
+  e.preventDefault();
+  drop.classList.add("over");
+}));
+["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => {
+  e.preventDefault();
+  drop.classList.remove("over");
+}));
+drop.addEventListener("drop", (e) => readFiles(e.dataTransfer.files));
+$("#file").addEventListener("change", (e) => {
+  readFiles(e.target.files);
+  e.target.value = "";
+});
+$("#tpl").addEventListener("change", async (e) => {
+  const f = e.target.files[0];
+  if (!f) return;
+  state.template = await f.arrayBuffer();
+  state.templateName = f.name;
+  $("#tpl-name").textContent = f.name;
+  e.target.value = "";
+});
+$("#direction").addEventListener("change", remerge);
+$("#only-flagged").addEventListener("change", (e) => {
+  state.onlyFlagged = e.target.checked;
+  render();
+});
+$("#drawings").addEventListener("click", (e) => {
+  const i = e.target.dataset.remove;
+  if (i === void 0) return;
+  state.drawings.splice(+i, 1);
+  remerge();
+});
+$("#tbody").addEventListener("input", (e) => {
+  const td = e.target.closest("td[data-k]");
+  if (!td) return;
+  state.rows[+td.dataset.i][td.dataset.k] = td.textContent.trim();
+});
+$("#tbody").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && e.target.matches("td[contenteditable]")) {
+    e.preventDefault();
+    e.target.blur();
+  }
+});
+$("#btn-xlsx").addEventListener("click", exportXlsx);
+$("#btn-json").addEventListener("click", exportJson);
+$("#btn-csv").addEventListener("click", exportReview);
+$("#btn-clear").addEventListener("click", () => {
+  state.drawings = [];
+  state.rows = [];
+  render();
+  status("Cleared.");
+});
+render();
+
+</script>
+</body>
+</html>
