@@ -1,0 +1,8 @@
+   node_modules/
+   dist/
+   test/out.json
+   test/*.png
+   test/output_schedule.xlsx
+   test/output_schedule.pdf
+   test/browser_output.xlsx
+   *.geom.json
