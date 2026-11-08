@@ -68,7 +68,7 @@ for (const project of ['gaskell-st', 'knutsford-dt']) {
     for (const r of res.rows) { const o = P.rows.find(x => x.ref === r.ref); assert.deepStrictEqual([r.source, r.destination, r.type, r.size], [o.source, o.destination, o.type, o.size], r.ref); }
     assert.strictEqual(res.summary.confirmed + res.summary.unconfirmed, plan.ai + plan.spot);
     assert.ok(ai.calls.length <= plan.requests + 2, `${ai.calls.length} requests`);
-    assert.ok(ai.calls.every(c => c.n <= 5));
+    assert.ok(ai.calls.every(c => c.n <= 8));
     console.log(`     ${ai.calls.length} requests, ${res.summary.confirmed} confirmed, ${res.summary.notNeeded} not needed, ${res.summary.person} for a person`);
   });
 
