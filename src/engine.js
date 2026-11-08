@@ -10,7 +10,9 @@ const REF_RE = /^([A-Z]{1,3}\d{2}[A-Z]{2}[0-9X]{3,5}(?:-\d+)?)\s*(?:\(\s*(B\d(?:
 const BAND_RE = /^\(\s*(B\d(?:\s*[&+\/]\s*B\d)?)\s*\)$/;
 export const DWG_RE = /\d{6,}-\d{2}-[A-Z]{2,4}-\d{4,6}-[A-Z]{2}-[A-Z]{2}-[A-Z]-\d{4,6}/;
 // Text that is part of a symbol, not a name
-const NOISE_RE = /^(P|C|E|M|H|TH|SL|VSD|DOL|f\d|\d~|NOTE\s*\d+|LIT\d+|[\d.]+\s*kW)$/i;
+const NOISE_RE = /^(P|C|E|M|H|TH|SL|VSD|DOL|E\.\s?S\.?|f\d|\d~|NOTE\s*\d+|LIT\d+|[\d.]+\s*kW)$/i;
+// Asset tag lines printed under equipment names, e.g. 07808-SU1-NA1-BLD01-HT001
+const TAG_RE = /^[A-Z0-9]{2,}(?:-[A-Z0-9]{2,}){3,}$/;
 
 const dist = (ax, ay, bx, by) => Math.hypot(ax - bx, ay - by);
 const isV = s => Math.abs(s.x1 - s.x2) < 0.6;
@@ -90,10 +92,19 @@ function readTitleBlock(texts) {
 
 // ---------------------------------------------------------------------------
 // Header strip (board schedule along the top of the BCD)
-function readStrip(texts, segs) {
-  const desc = texts.find(t => t.angle === 0 && /^DESCRIPTION$/i.test(t.str));
-  const ref = texts.find(t => t.angle === 0 && /^REFERENCE$/i.test(t.str));
-  if (!desc || !ref) return null;
+// A sheet can have more than one strip (e.g. an MCC with a second "ICA" strip lower down):
+// every REFERENCE row title with a DESCRIPTION row title below it starts one.
+function readStrips(texts, segs, title = '') {
+  const out = [];
+  for (const ref of texts.filter(t => t.angle === 0 && /^REFERENCE$/i.test(t.str))) {
+    const desc = texts.filter(t => t.angle === 0 && /^DESCRIPTION$/i.test(t.str) && Math.abs(t.x0 - ref.x0) < 25 && t.cy > ref.cy && t.cy - ref.cy < 220)
+      .sort((a, b) => a.cy - b.cy)[0];
+    if (desc) { const st = readStrip(texts, segs, ref, desc, title); if (st) out.push(st); }
+  }
+  return out;
+}
+
+function readStrip(texts, segs, ref, desc, title) {
   const left = Math.min(desc.x0, ref.x0) - 6;
   // strip horizontal lines: long lines starting near the left edge
   const hl = segs.filter(s => isH(s) && Math.min(s.x1, s.x2) < left + 12 && segLen(s) > 200 && s.y1 > ref.y0 - 30 && s.y1 < desc.y1 + 80)
@@ -104,7 +115,16 @@ function readStrip(texts, segs) {
     .sort((a, b) => a.cy - b.cy)[0];
   const ys = hl.map(h => h.y).sort((a, b) => a - b);
   const bottomRef = last ? last.cy : desc.cy;
-  const bottom = ys.filter(y => y > bottomRef).sort((a, b) => a - b)[0] ?? (bottomRef + 8);
+  // bottom edge: a long line below the last row, or else where most short line pieces are
+  let bottom = ys.filter(y => y > bottomRef).sort((a, b) => a - b)[0];
+  if (bottom == null) {
+    const tally = new Map();
+    for (const sg of segs) if (isH(sg) && segLen(sg) > 15 && sg.y1 > bottomRef && sg.y1 < bottomRef + 25 && Math.max(sg.x1, sg.x2) > left && Math.min(sg.x1, sg.x2) < right) {
+      const k = Math.round(sg.y1); tally.set(k, (tally.get(k) || 0) + segLen(sg));
+    }
+    const bestY = [...tally].sort((a, b) => b[1] - a[1])[0];
+    bottom = bestY ? bestY[0] : bottomRef + 8;
+  }
   const top = ys.filter(y => y < ref.cy).sort((a, b) => b - a)[0] ?? (ref.y0 - 4);
   const descTop = ys.filter(y => y < desc.cy).sort((a, b) => b - a)[0] ?? desc.y0 - 6;
   const descBot = ys.filter(y => y > desc.cy).sort((a, b) => a - b)[0] ?? desc.y1 + 6;
@@ -112,7 +132,15 @@ function readStrip(texts, segs) {
   // panel name = text in the REFERENCE row
   const refTxt = texts.filter(t => t.angle === 0 && t !== ref && t.cy > top && t.cy < refBot && t.x0 > ref.x1 && t.x1 < right + 5)
     .map(t => t.str).join(' ');
-  const name = refTxt.replace(/\s*-\s*FORM\s*\w+\s*$/i, '').trim();
+  let name = refTxt.replace(/\s*-\s*FORM\s*\w+\s*$/i, '').trim();
+  if (!name) {
+    // some strips write the board name in another top row (e.g. across COMPARTMENT)
+    const rowTitles = /^(REFERENCE|COMPARTMENT|TYPE\/?\s*SIZE|WB REF|DESCRIPTION|TAG|WAY)$/i;
+    const cand = texts.filter(t => t.angle === 0 && t.cy > top && t.cy < descTop && t.x0 > ref.x1 && t.x1 < right + 5 &&
+      !rowTitles.test(t.str) && !/BS\s?88|MCB|\bAMP\b|^\d+[A-Z]?$|^ICA$/i.test(t.str) && /[A-Z]{3,}/i.test(t.str))
+      .sort((a, b) => (b.x1 - b.x0) - (a.x1 - a.x0));
+    name = cand[0]?.str || (title || '').replace(/\s*\bBCD\b\s*$/i, '').trim();
+  }
   // column boundaries: vertical lines crossing the description row
   const xs = segs.filter(s => isV(s) && Math.min(s.y1, s.y2) <= desc.cy && Math.max(s.y1, s.y2) >= desc.cy && s.x1 > left && s.x1 <= right + 2)
     .map(s => s.x1).sort((a, b) => a - b);
@@ -125,7 +153,7 @@ function readStrip(texts, segs) {
     const d = descTexts.filter(t => t.cx > a && t.cx < b).sort((p, q) => p.cy - q.cy).map(t => t.str).join(' ');
     return { x0: a, x1: b, description: d };
   };
-  return { name, rawName: refTxt, x0: left, x1: right, y0: top, y1: bottom, column };
+  return { name, rawName: refTxt || name, x0: left, x1: right, y0: top, y1: bottom, column };
 }
 
 // ---------------------------------------------------------------------------
@@ -179,11 +207,17 @@ export function extractDrawing(geom, fileName = '', rules = DEFAULT_RULES) {
   const issues = [];
   const tb = readTitleBlock(texts);
   const tbX = isFinite(tb._titleBlockX) ? tb._titleBlockX - 5 : Infinity;
-  const strip = readStrip(texts.filter(t => t.x1 < tbX), segs);
-  const inStrip = (x, y) => strip && x > strip.x0 && x < strip.x1 && y > strip.y0 - 2 && y < strip.y1 + 1;
+  const strips = readStrips(texts.filter(t => t.x1 < tbX), segs, tb.title);
+  const strip = strips[0] || null;
+  // the strip a point belongs to; `below` = how far under the strip still counts (cables
+  // leave the strip through a small P/C marker, so their lines start a little below it)
+  const stripAt = (x, y, below = 1) => strips.find(st => x > st.x0 && x < st.x1 && y > st.y0 - 2 && y < st.y1 + below);
+  const inStrip = (x, y) => !!stripAt(x, y);
 
-  const rects = findRects(segs).filter(r => r.x1 < tbX && !(strip && r.y0 >= strip.y0 - 2 && r.y1 <= strip.y1 + 2))
-    .filter(r => !r.open || texts.some(t => t.angle === 0 && inside(t.cx, t.cy, r) && /[A-Za-z]/.test(t.str) && !REF_RE.test(t.str)));
+  const rects = findRects(segs).filter(r => r.x1 < tbX && !strips.some(st => r.y0 >= st.y0 - 2 && r.y1 <= st.y1 + 2 && r.x0 >= st.x0 - 2 && r.x1 <= st.x1 + 2))
+    // a box must have writing in it: four lines that happen to enclose an empty space
+    // (e.g. two parallel cables between two boxes) are not a box
+    .filter(r => texts.some(t => t.angle === 0 && inside(t.cx, t.cy, r) && /[A-Za-z]{2}/.test(t.str) && !REF_RE.test(t.str) && !NOISE_RE.test(t.str)));
   const rectEdge = new Set(rects.flatMap(r => r.edges));
   // drawing-area texts
   const dTexts = texts.filter(t => t.x1 < tbX && !inStrip(t.cx, t.cy));
@@ -256,19 +290,29 @@ export function extractDrawing(geom, fileName = '', rules = DEFAULT_RULES) {
             const near = dA < dB ? [n.x1, n.y1] : [n.x2, n.y2];
             const ahead = ((near[0] - px) * ux + (near[1] - py) * uy) / ul;
             return { n, d: Math.min(dA, dB), ahead };
-          }).filter(g => g.ahead > 0 && g.d < 14).sort((a, b) => a.d - b.d);
+          }).filter(g => g.ahead > 0 && g.d < 18).sort((a, b) => a.d - b.d);
         if (next.length === 0 && gap.length) next = [gap[0].n];
         else break;
       }
       const n = next[0];
+      // cables run in long straight lengths; a turn onto a short stroke means the line has
+      // reached an equipment symbol drawn with straight lines, so the cable ends here
+      const cu = [cur.x2 - cur.x1, cur.y2 - cur.y1], nu = [n.x2 - n.x1, n.y2 - n.y1];
+      const sinT = Math.abs(cu[0] * nu[1] - cu[1] * nu[0]) / ((Math.hypot(...cu) * Math.hypot(...nu)) || 1);
+      if (sinT > 0.17 && segLen(n) < 25 && seen.size > 0) break;
       seen.add(n);
       const farFirst = dist(px, py, n.x1, n.y1) > dist(px, py, n.x2, n.y2);
       qx = farFirst ? n.x2 : n.x1; qy = farFirst ? n.y2 : n.y1;
       px = farFirst ? n.x1 : n.x2; py = farFirst ? n.y1 : n.y2;
       cur = n;
     }
+    // overall direction from the start of the walk: the last piece can point anywhere once
+    // the line wanders into an equipment symbol, but the cable's general heading cannot
+    const sx = fromEnd ? s.x1 : s.x2, sy = fromEnd ? s.y1 : s.y2;
+    const ol = Math.hypot(px - sx, py - sy);
     const dl = Math.hypot(px - qx, py - qy) || 1;
-    return { x: px, y: py, dx: (px - qx) / dl, dy: (py - qy) / dl, path: seen };
+    const [dx, dy] = ol > 5 ? [(px - sx) / ol, (py - sy) / ol] : [(px - qx) / dl, (py - qy) / dl];
+    return { x: px, y: py, dx, dy, path: seen };
   };
 
   // free text blocks for naming ends
@@ -278,34 +322,40 @@ export function extractDrawing(geom, fileName = '', rules = DEFAULT_RULES) {
   const nodeAt = (end, path) => {
     const { x, y, dx, dy } = end;
     // a) header strip
-    if (strip && x > strip.x0 && x < strip.x1 && y > strip.y0 - 2 && y < strip.y1 + 22) {
-      return { kind: 'panel', name: strip.name, way: strip.column(x).description };
-    }
-    // b) a box edge
-    const r = rects.find(r => r.edges.some(e => ptSegDist(x, y, e) < 2));
-    if (r) {
+    const sp = stripAt(x, y, 30);
+    if (sp) return { kind: 'panel', name: sp.name, way: sp.column(x).description };
+    // b) a box edge: of the boxes touched, take the biggest one with a name in it
+    //    (an isolator box can hold smaller boxes, e.g. around an E.S symbol)
+    let boxHit = null;
+    for (const r of rects.filter(r => r.edges.some(e => ptSegDist(x, y, e) < 2))) {
       const inner = dTexts.filter(t => inside(t.cx, t.cy, r) && !used.has(t)).sort((a, b) => (a.cy - b.cy) || (a.x0 - b.x0));
-      const words = inner.map(t => t.str).filter(s => !NOISE_RE.test(s));
-      if (words.length) {
-        if (strip && r.y0 - strip.y1 < 30 && r.x0 > strip.x0 && r.x1 < strip.x1)
-          return { kind: 'panel', name: strip.name, way: strip.column((r.x0 + r.x1) / 2).description };
-        return { kind: 'box', name: words.join(' '), box: r, first: inner.find(t => !NOISE_RE.test(t.str)) };
-      }
+      const words = inner.map(t => t.str).filter(w => !NOISE_RE.test(w) && !TAG_RE.test(w));
+      if (!words.length) continue;
+      const area = (r.x1 - r.x0) * (r.y1 - r.y0);
+      if (!boxHit || area > boxHit.area) boxHit = { r, inner, words, area };
     }
-    // c) touching another cable line part-way along (T-junction) => leader arrow / tee
-    // d) nearest free text block, favouring the direction of travel
+    if (boxHit) {
+      const { r, inner, words } = boxHit;
+      const sp2 = strips.find(st => r.y0 >= st.y1 - 5 && r.y0 - st.y1 < 30 && r.x0 > st.x0 && r.x1 < st.x1);
+      if (sp2) return { kind: 'panel', name: sp2.name, way: sp2.column((r.x0 + r.x1) / 2).description };
+      return { kind: 'box', name: words.join(' '), box: r, first: inner.find(t => !NOISE_RE.test(t.str)) };
+    }
+    // c) nearest free text block roughly in line with the cable: ahead of the line end,
+    //    or very close to it. Text far off to the side belongs to something else.
     let best = null, bestScore = Infinity;
     for (const b of blocks) {
       const d = boxDist(x, y, b);
-      const bx = (b.x0 + b.x1) / 2, by = (b.y0 + b.y1) / 2;
-      const along = (bx - x) * dx + (by - y) * dy;
-      const lim = along > 0 ? 260 : 70;
-      if (d > lim) continue;
-      const score = d * (along > 0 ? 1 : 2.5);
+      const corners = [[b.x0, b.y0], [b.x1, b.y0], [b.x0, b.y1], [b.x1, b.y1]];
+      const cross = corners.map(([px, py]) => (px - x) * dy - (py - y) * dx);
+      const lateral = Math.min(...cross) < 0 && Math.max(...cross) > 0 ? 0 : Math.min(...cross.map(Math.abs));
+      const along = ((b.x0 + b.x1) / 2 - x) * dx + ((b.y0 + b.y1) / 2 - y) * dy;
+      const ok = along > 0 ? d <= 260 && lateral <= Math.max(45, along * 0.5) : d <= 50;
+      if (!ok) continue;
+      const score = d + lateral * 1.5 + (along > 0 ? 0 : 30);
       if (score < bestScore) { bestScore = score; best = b; }
     }
     if (best) {
-      const raw = best.lines.filter(s => !NOISE_RE.test(s));
+      const raw = best.lines.filter(w => !NOISE_RE.test(w));
       const joined = raw.join(' ');
       if (/^(FROM|TO|SEE)\s+DRAWING/i.test(joined)) {
         const num = (raw.slice(1).join('').replace(/\s+/g, '').match(DWG_RE) || [''])[0];
@@ -314,12 +364,14 @@ export function extractDrawing(geom, fileName = '', rules = DEFAULT_RULES) {
         return { kind: 'offsheet', verb, drawing: num, note, name: '', text: joined, block: best };
       }
       if (/^FROM\s+DNO$/i.test(joined) || /^DNO\b/i.test(joined)) return { kind: 'dno', name: 'DNO', block: best };
-      // controller near the strip belongs to the panel
-      if (/CONTROLLER/i.test(joined) && strip && best.y0 - strip.y1 < 40 && best.x0 > strip.x0 && best.x1 < strip.x1)
-        return { kind: 'panel', name: strip.name, way: strip.column((best.x0 + best.x1) / 2).description };
-      return { kind: 'device', name: joined, block: best, first: best.texts.find(t => !NOISE_RE.test(t.str)) };
+      // controller just under a strip belongs to that board
+      const sp3 = /CONTROLLER/i.test(joined) && strips.find(st => best.y0 - st.y1 < 40 && best.y0 >= st.y1 - 5 && best.x0 > st.x0 && best.x1 < st.x1);
+      if (sp3) return { kind: 'panel', name: sp3.name, way: sp3.column((best.x0 + best.x1) / 2).description };
+      const name = raw.filter(w => !TAG_RE.test(w)).join(' ');
+      return { kind: 'device', name, block: best, first: best.texts.find(t => !NOISE_RE.test(t.str)) };
     }
-    return { kind: 'unknown', name: '', at: [Math.round(x), Math.round(y)] };
+    // d) nothing drawn at this end
+    return { kind: 'open', name: '', at: [Math.round(x), Math.round(y)] };
   };
 
   // give each end a stable key (first word of its text) and tag controllers with their LIT number
@@ -336,31 +388,44 @@ export function extractDrawing(geom, fileName = '', rules = DEFAULT_RULES) {
   };
 
   // 3. spec text for each label (type + size) — on the far side of the line
+  // is text u on label L's specification side: beyond its cable line, within reach?
+  const onSpecSide = (L, u) => {
+    const t = L.t, line = L.line, sz = t.size;
+    if (!(Math.abs(t.angle) === 90 && line && isV(line)) || u.angle !== t.angle) return false;
+    const side = line.x1 >= t.cx ? 1 : -1;
+    return (side > 0 ? (u.x0 >= line.x1 - 1.5 && u.x0 - line.x1 < sz * 3.4) : (u.x1 <= line.x1 + 1.5 && line.x1 - u.x1 < sz * 3.4)) &&
+      Math.min(u.y1, t.y1 + 60) - Math.max(u.y0, t.y0 - 60) > 0;
+  };
   const specOf = (L, line) => {
     const t = L.t, sz = t.size;
     let cand = [];
     if (Math.abs(t.angle) === 90 && line && isV(line)) {
       const side = line.x1 >= t.cx ? 1 : -1;
-      cand = dTexts.filter(u => !used.has(u) && u.angle === t.angle && !REF_RE.test(u.str) && !BAND_RE.test(u.str) &&
-        (side > 0 ? (u.x0 >= line.x1 - 1.5 && u.x0 - line.x1 < sz * 2.6) : (u.x1 <= line.x1 + 1.5 && line.x1 - u.x1 < sz * 2.6)) &&
-        Math.min(u.y1, t.y1 + 60) - Math.max(u.y0, t.y0 - 60) > 0)
+      cand = dTexts.filter(u => !used.has(u) && !REF_RE.test(u.str) && !BAND_RE.test(u.str) && onSpecSide(L, u))
         .sort((a, b) => side * (a.cx - b.cx));
     } else {
-      // horizontal label: spec on the next line(s) below (beyond the line if there is one between)
-      cand = dTexts.filter(u => !used.has(u) && u.angle === 0 && u !== t && !REF_RE.test(u.str) && !BAND_RE.test(u.str) &&
-        u.y0 >= t.y1 - 1 && u.y0 - t.y1 < sz * 1.9 && Math.min(u.x1, t.x1 + 40) - Math.max(u.x0, t.x0 - 40) > 0)
-        .sort((a, b) => a.cy - b.cy).slice(0, 1);
-      // spec words must look like a cable spec
-      cand = cand.filter(u => /(mm|PR|\dc\b|\dc\s|VENDOR|SUBCAB|XLPE|SWA|BS\d|G&Y|-Y|-X|\dG\d)/i.test(u.str));
+      // horizontal label: spec on the next line or two below it (size, then type)
+      const specLike = u => /(mm|PR|\dc\b|\dc\s|VENDOR|SUBCAB|XLPE|SWA|BS\d|G&Y|-Y|-X|\dG\d)/i.test(u.str);
+      const below = dTexts.filter(u => !used.has(u) && u.angle === 0 && u !== t && !REF_RE.test(u.str) && !BAND_RE.test(u.str) &&
+        u.y0 >= t.y1 - 1 && u.y0 - t.y1 < sz * 4 && Math.min(u.x1, t.x1 + 40) - Math.max(u.x0, t.x0 - 40) > 0)
+        .sort((a, b) => a.cy - b.cy);
+      cand = [];
+      let prevBottom = t.y1;
+      for (const u of below) {
+        if (u.y0 - prevBottom > sz * 1.9 || !specLike(u) || cand.length >= 2) break;
+        cand.push(u); prevBottom = u.y1;
+      }
     }
     // stop at the first text that is closer to another label
     const out = [];
     for (const u of cand) {
       const mine = boxDist(u.cx, u.cy, t);
-      const other = labels.some(o => o !== L && o.t.angle === t.angle && boxDist(u.cx, u.cy, o.t) < mine - 1);
+      // text that is nearer another label only belongs to it if it is on that label's spec side
+      const other = labels.some(o => o !== L && o.t.angle === t.angle && boxDist(u.cx, u.cy, o.t) < mine - 1 &&
+        (Math.abs(t.angle) !== 90 || onSpecSide(o, u)));
       if (other) continue;
       out.push(u);
-      if (out.length >= 2) break;
+      if (out.length >= 3) break;
     }
     out.forEach(u => used.add(u));
     return out.map(u => u.str).join(' ');
@@ -394,19 +459,29 @@ export function extractDrawing(geom, fileName = '', rules = DEFAULT_RULES) {
       }
       return best;
     };
-    if (pathLen < 160 && L.t.angle === 0) {
-      const hit = rayHit(A) || rayHit(B);
+    // a leader starts right at its label and ends (in an arrow) on the cable it labels
+    const atLabel = e => boxDist(e.x, e.y, L.t) < L.t.size * 1.2;
+    if (pathLen < 160 && L.t.angle === 0 && (atLabel(A) || atLabel(B))) {
+      const hit = (atLabel(B) && rayHit(A)) || (atLabel(A) && rayHit(B));
       if (hit) {
         line = hit;
         A = walk(line, false); B = walk(line, true);
         rec.flags.push('Label attached by leader arrow — check it points at the right cable');
       }
     }
-    const nA = nodeAt(A, A.path), nB = nodeAt(B, B.path);
+    let nA = nodeAt(A, A.path), nB = nodeAt(B, B.path);
     nA.pos = [Math.round(A.x), Math.round(A.y)]; nB.pos = [Math.round(B.x), Math.round(B.y)];
     for (const n of [nA, nB]) finishNode(n);
+    // A cable leaving a board way with nothing drawn at its far end goes to what the
+    // way's DESCRIPTION says (e.g. EXTERNAL LIGHTING). An incomer's open end is left for
+    // another sheet to fill in, or left blank.
+    for (const [p, o] of [[nA, nB], [nB, nA]]) {
+      if (p.kind === 'panel' && o.kind === 'open' && p.way && !/INCOMER|\bFROM\b|SPARE/i.test(p.way)) {
+        o.kind = 'device'; o.name = p.way; o.fromColumn = true;
+        rec.flags.push(`Nothing drawn at the far end: destination taken from the board way description "${p.way}"`);
+      }
+    }
     rec.ends = [nA, nB];
-    for (const n of rec.ends) if (n.kind === 'unknown') rec.flags.push(`Could not identify the equipment at the cable end near (${n.at.join(', ')})`);
     resolved.push(rec);
   }
 
@@ -530,7 +605,12 @@ export function mergeDrawings(drawings, rules = DEFAULT_RULES) {
     else if (expect && !band.split('&').includes(expect)) flags.push(`Prefix ${pre} is normally ${expect}, drawing says ${band}`);
     if (!size) flags.push('No core/size found');
     if (!type) flags.push('No cable type found');
-    if (!pair[0].full || !pair[1].full) flags.push('Source or destination missing');
+    if (!pair[0].full || !pair[1].full) {
+      const incomer = pair.find(e => e.kind === 'panel' && /INCOMER/i.test(e.way || ''));
+      flags.push(incomer
+        ? `Incoming supply to ${incomer.full}: nothing is drawn at the other end on the uploaded drawings, so it is left blank`
+        : 'Source or destination missing');
+    }
     rows.push({
       ref, source: pair[0].full, destination: pair[1].full, type, size,
       voltage: voltageForBand(band, rules), band,
