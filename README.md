@@ -130,7 +130,7 @@ The rules engine reads the drawings exactly but only understands drafting styles
 
 It is an AI step inside a fixed pipeline, not an agent: the code decides what happens, the AI only reads.
 
-**Using it:** tick *AI cross-check* in step 02, paste a Gemini API key (free from [Google AI Studio](https://aistudio.google.com) → Get API key), and click *Run AI cross-check*. The key can be remembered in your browser; it is never stored in this repository or on the website.
+**Using it:** tick *AI cross-check* in step 02 and paste a Gemini API key (free from [Google AI Studio](https://aistudio.google.com) → Get API key). The key is remembered in your browser (never in this repository or on the website), and from then on the AI check starts by itself whenever drawings are added; untick *Run the AI check automatically* to start it with the button instead. The schedule is ready straight away; the AI results are added when they arrive (usually 1–3 minutes for 4 sheets, with a timer and a Stop button).
 
 **If the AI is unavailable, the tool still works.** The rules engine never depends on the AI: reading drawings, editing and downloading the schedule work the same with the AI off, failing or out of free allowance. Safeguards:
 
@@ -140,9 +140,12 @@ It is an AI step inside a fixed pipeline, not an agent: the code decides what ha
 | A model's daily free limit used up | Switches to the next free Gemini model (e.g. Flash-Lite) |
 | No answer from Google | Gives up on that request after 90 seconds and tries again |
 | One sheet keeps failing | The other sheets are still checked; that sheet's rows are marked *Not checked*; **Retry what failed** asks again for only those sheets |
+| Google busy (503) | Shows "Google's AI service is busy", waits and tries again |
+| A sheet takes too long | Each sheet gets about 3 minutes in total; then it is marked *Not checked* and can be retried |
+| You press **Stop** | Stops at once; rows not yet checked are marked *Not checked* |
 | Google unreachable or key rejected | A plain message; the schedule stays as the rules engine read it |
 
-Requests are spaced a few seconds apart so a large drawing set does not hit the per-minute limit by itself.
+Two sheets are read at a time, requests are spaced a few seconds apart so a large drawing set does not hit the per-minute limit by itself, images are sent as compressed JPEGs, and the AI is asked to keep its internal "thinking" short, which makes answers much faster.
 
 **Privacy:** the rules engine never sends drawings anywhere. The AI cross-check sends images of the drawings to Google. On Google's free tier, Google may use what is sent to improve its products.
 
