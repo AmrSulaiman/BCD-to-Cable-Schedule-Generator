@@ -6,16 +6,18 @@ import { readPage } from './pdfread.js';
 import { extractDrawing, mergeDrawings } from './engine.js';
 import { DEFAULT_RULES, fullName } from './rules.js';
 import { buildWorkbook } from './excel.js';
-import { renderPageForAI } from './ai/render.js';
+import { renderPageForAI, renderRegion } from './ai/render.js';
 import { geminiProvider } from './ai/gemini.js';
 import { crossCheck, recordingProvider, replayProvider, resumeProvider } from './ai/crosscheck.js';
+import { targetedCheck, planChecks, summarisePlan } from './ai/targeted.js';
 
 pdfjs.GlobalWorkerOptions.workerSrc = 'PDFJS_WORKER_URL';
 
 const $ = s => document.querySelector(s);
 const state = {
   drawings: [], rows: [], template: null, onlyFlagged: false,
-  sources: new Map(),   // file -> { bytes, page, pageText }   kept so the AI can render the sheet later
+  sources: new Map(),   // file -> { bytes, page, pageText, texts }   kept so the AI can render the sheet later
+  ruleRows: [],         // the rules engine's rows, before any AI check
   ai: null,             // { store, model, provider, summary, log, files }  last AI cross-check
 };
 
@@ -24,12 +26,17 @@ const EDITABLE = ['ref', 'source', 'destination', 'type', 'size', 'voltage', 'ba
 const FIELD_COLS = { ends: ['source', 'destination'], type: ['type'], size: ['size'], band: ['band'] };
 const FIELD_LABEL = { ends: 'Ends', type: 'Type', size: 'Size', band: 'Band' };
 const STATUS = {
+  confirmed: ['Confirmed', 'The AI read the same from a close-up of the drawing'],
+  filled: ['AI filled in', 'The AI filled in a value the rules engine could not find — check it'],
+  person: ['Needs a person', 'The information is missing or the drawings disagree; the AI cannot settle this'],
+  not_needed: ['Not needed', 'A clear-cut reading, so it was not sent to the AI'],
+  resolved: ['Picked by you', 'You chose between the two readings'],
   agreed: ['Agreed', 'AI and rules engine agree'],
   disputed: ['Disputed', 'AI and rules engine disagree'],
   unconfirmed: ['Unconfirmed', 'Partly confirmed by the AI'],
   ai_only: ['AI only', 'Found by the AI only'],
   rules_only: ['Rules only', 'The AI did not report this cable'],
-  not_checked: ['Not checked', 'The AI could not read this sheet'],
+  not_checked: ['Not checked', 'The AI check did not finish for this cable'],
 };
 
 function b64ToBuf(b64) {
@@ -61,7 +68,7 @@ async function readFiles(files) {
         if (!d.cables.length && geom.texts.length >= 10) d.warn.push('No cable references found.');
         state.drawings = state.drawings.filter(x => x.file !== d.file && !(d.drawing.wbNumber && x.drawing.wbNumber === d.drawing.wbNumber));
         state.drawings.push(d);
-        state.sources.set(d.file, { bytes, page: p, pageText: geom.texts.map(t => t.str).join(' ') });
+        state.sources.set(d.file, { bytes, page: p, pageText: geom.texts.map(t => t.str).join(' '), texts: geom.texts.map(({ str, x0, y0, x1, y1 }) => ({ str, x0, y0, x1, y1 })) });
       }
     } catch (e) {
       console.error(e);
@@ -103,14 +110,41 @@ const sheetsFor = () => state.drawings.map(d => {
   };
 });
 
+// For the targeted check: each sheet's words (with positions) and close-ups on demand
+const pageCache = new Map();
+const pageOf = async file => {
+  if (!pageCache.has(file)) {
+    const src = state.sources.get(file);
+    pageCache.set(file, pdfjs.getDocument({ data: src.bytes.slice(), verbosity: 0 }).promise.then(doc => doc.getPage(src.page)));
+  }
+  return pageCache.get(file);
+};
+const closeUpSheets = () => state.drawings.map(d => ({
+  drawing: d, texts: state.sources.get(d.file)?.texts || [],
+  renderRegion: async region => renderRegion(await pageOf(d.file), region, {
+    makeCanvas: (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; },
+    encode: async c => c.toDataURL('image/jpeg', 0.9).split(',')[1],
+  }),
+}));
+// a sheet with no text layer (scanned) can only be read whole by the AI
+const anyScanned = () => state.drawings.some(d => (state.sources.get(d.file)?.texts.length || 0) < 10);
+const runCheck = (provider, onProgress) => {
+  const rules = rulesNow();
+  const ruleRows = mergeDrawings(state.drawings, rules).rows;
+  return anyScanned()
+    ? crossCheck({ sheets: sheetsFor(), ruleRows, rules, provider, onProgress }).then(r => ({ ...r, mode: 'whole' }))
+    : targetedCheck({ sheets: closeUpSheets(), drawings: state.drawings, ruleRows, rules, provider, onProgress }).then(r => ({ ...r, mode: 'targeted' }));
+};
+
 // Rebuild rows. If an AI check was run on exactly these drawings, re-apply its saved
 // answers (no new AI requests), e.g. after the direction setting changes.
 async function remerge() {
   const rules = rulesNow();
   const ruleRows = mergeDrawings(state.drawings, rules).rows;
+  state.ruleRows = ruleRows;
   const files = state.drawings.map(d => d.file).sort().join('|');
   if (state.ai && state.ai.files === files) {
-    const res = await crossCheck({ sheets: sheetsFor(), ruleRows, rules, provider: replayProvider(state.ai.store, state.ai.provider) });
+    const res = await runCheck(replayProvider(state.ai.store, state.ai.provider));
     state.rows = res.rows;
   } else {
     if (state.ai) { state.ai = null; showAI(); }
@@ -126,16 +160,29 @@ function showAI() {
   const btn = $('#btn-ai');
   btn.disabled = !on || !state.drawings.length || !$('#ai-key').value.trim();
   const s = state.ai?.summary;
-  $('#ai-result').innerHTML = s ? `
+  // before running: say exactly what will be sent
+  const plan = !s && state.ruleRows.length && !anyScanned() ? summarisePlan(planChecks(state.ruleRows)) : null;
+  $('#ai-plan').innerHTML = plan ? `The AI will look at close-ups of <b>${plan.ai}</b> unsure reading${plan.ai === 1 ? '' : 's'} and <b>${plan.spot}</b> spot check${plan.spot === 1 ? '' : 's'} (${plan.requests} small request${plan.requests === 1 ? '' : 's'}). <b>${plan.none}</b> clear-cut readings are not sent. <b>${plan.person}</b> row${plan.person === 1 ? ' needs' : 's need'} a person (missing information or drawings that disagree), which the AI cannot settle.`
+    : !s && anyScanned() ? 'A sheet has no text layer (scanned), so the AI will read the sheets whole. This is slower.' : '';
+  const st = state.ai?.stats;
+  $('#ai-result').innerHTML = s && state.ai.mode === 'targeted' ? `
+    <span><b class="ok">${s.confirmed}</b> confirmed</span>
+    <span><b class="warnc">${s.disputed}</b> disputed</span>
+    ${s.filled ? `<span><b class="warnc">${s.filled}</b> filled in by AI</span>` : ''}
+    ${s.unconfirmed ? `<span><b class="warnc">${s.unconfirmed}</b> partly confirmed</span>` : ''}
+    <span><b class="warnc">${s.person}</b> need a person</span>
+    <span><b>${s.notNeeded}</b> not needed</span>
+    ${s.notChecked ? `<span><b class="badc">${s.notChecked}</b> not checked</span>` : ''}
+    ${st ? `<span class="muted">${st.requests} request${st.requests === 1 ? '' : 's'} · ${st.seconds} s</span>` : ''}` : s ? `
     <span><b class="ok">${s.agreed}</b> agreed</span>
     <span><b class="warnc">${s.disputed}</b> disputed</span>
     ${s.unconfirmed ? `<span><b class="warnc">${s.unconfirmed}</b> partly confirmed</span>` : ''}
     ${s.aiOnly ? `<span><b class="warnc">${s.aiOnly}</b> found by AI only</span>` : ''}
     ${s.rulesOnly ? `<span><b class="warnc">${s.rulesOnly}</b> not reported by AI</span>` : ''}
     ${s.notChecked ? `<span><b class="badc">${s.notChecked}</b> not checked</span>` : ''}
-    ${state.ai.retryable ? `<button id="btn-ai-retry" class="ghost small" type="button">Retry what failed</button>` : ''}
-    <span class="muted">${esc(state.ai.provider)} · ${esc(state.ai.model)}</span>
-    ${state.ai.log.length ? `<details><summary>${state.ai.log.length} note${state.ai.log.length === 1 ? '' : 's'} from the check</summary><ul>${state.ai.log.map(l => `<li>${esc(l)}</li>`).join('')}</ul></details>` : ''}` : '';
+    ${state.ai?.retryable ? `<button id="btn-ai-retry" class="ghost small" type="button">Retry what failed</button>` : ''}
+    ${s ? `<span class="muted">${esc(state.ai.provider)} · ${esc(state.ai.model)}</span>` : ''}
+    ${state.ai?.log.length ? `<details><summary>${state.ai.log.length} note${state.ai.log.length === 1 ? '' : 's'} from the check</summary><ul>${state.ai.log.map(l => `<li>${esc(l)}</li>`).join('')}</ul></details>` : ''}` : '';
 }
 
 // retry = only ask again for what failed last time (answers already received are re-used)
@@ -153,18 +200,19 @@ async function runAI(retry = false) {
   aiRun.timer = setInterval(() => status(`${aiRun.last}… ${clock()}`), 1000);
   const files = state.drawings.map(d => d.file).sort().join('|');
   try {
-    const rules = rulesNow();
-    const ruleRows = mergeDrawings(state.drawings, rules).rows;
-    const live = geminiProvider({ apiKey: key, onWait: say, isStopped: () => aiRun.stopped, ...(globalThis.BCD_AI_OPTIONS || {}) });
+    // close-ups are small, so the AI answers quickly: a short time limit per request
+    // (Safari also drops requests that get no answer for about a minute)
+    const live = geminiProvider({ apiKey: key, onWait: say, isStopped: () => aiRun.stopped, ...(anyScanned() ? {} : { timeoutMs: 50000, budgetMs: 150000 }), ...(globalThis.BCD_AI_OPTIONS || {}) });
     const prov = retry && state.ai?.files === files ? resumeProvider(state.ai.store, live) : recordingProvider(live);
-    const res = await crossCheck({ sheets: sheetsFor(), ruleRows, rules, provider: prov, onProgress: say });
+    const res = await runCheck(prov, say);
     const failed = res.log.filter(l => /failed|stopped/.test(l)).length;
-    state.ai = { store: prov.store, model: res.model, provider: res.provider, summary: res.summary, log: res.log, raw: res.raw, files, retryable: failed > 0 };
+    state.ai = { store: prov.store, model: res.model, provider: res.provider, summary: res.summary, log: res.log, raw: res.raw, files, retryable: failed > 0, mode: res.mode, stats: res.stats };
     state.rows = res.rows;
     render();
     const s = res.summary, took = clock();
     if (aiRun.stopped) status(`AI check stopped after ${took}. Rows it had not checked show "Not checked"; the rules engine's reading is unchanged. You can carry on with "Retry what failed".`, 'warn');
     else if (failed) status(`AI cross-check finished with problems after ${took}: ${s.notChecked ? `${s.notChecked} rows not checked` : 'some reviews failed'}. The rules engine's reading is unchanged for those rows. You can retry just what failed.`, 'warn');
+    else if (res.mode === 'targeted') status(`AI check done in ${took}: ${s.confirmed} confirmed, ${s.disputed} disputed${s.filled ? `, ${s.filled} filled in` : ''}; ${s.person} row${s.person === 1 ? ' needs' : 's need'} a person. Check the amber rows.`, s.disputed || s.person ? 'warn' : 'good');
     else status(`AI cross-check done in ${took}: ${s.agreed} agreed, ${s.disputed} disputed. Check the amber rows.`, s.disputed ? 'warn' : 'good');
   } catch (e) {
     console.error(e);
@@ -219,12 +267,13 @@ function render() {
         ${rv?.reason ? `<span class="why">AI review: ${esc(rv.reason)}</span>` : ''}</div>`);
     }
     const otherFlags = r.flags.filter(f => !/^AI (reads|review)/.test(f));
+    if (r.check?.note && (st === 'disputed' || st === 'filled' || st === 'unconfirmed')) picks.push(`<span class="why">AI saw: ${esc(r.check.note)}</span>`);
     return `<tr class="${r.flags.length ? 'flagged' : ''}">
       <td class="sev"><span class="dot" title="${r.flags.length ? 'Needs checking' : 'OK'}"></span></td>
       ${withAI ? `<td><span class="badge" data-st="${st || 'none'}" title="${esc(STATUS[st]?.[1] || '')}">${esc(STATUS[st]?.[0] || '—')}</span></td>` : ''}
       ${EDITABLE.map(k => `<td contenteditable="true" spellcheck="false" data-i="${i}" data-k="${k}" class="${k === 'ref' || k === 'size' ? 'mono' : ''}${disputedCols.has(k) ? ' disputed' : ''}">${esc(r[k])}</td>`).join('')}
       <td class="sheets mono muted">${r.sheets.map(s => esc(s.replace(/^.*-W-/, 'W-'))).join('<br>')}</td>
-      <td class="flags">${picks.join('')}${otherFlags.map(f => `<span class="chip">${esc(f)}</span>`).join('')}</td>
+      <td class="flags">${picks.join('')}${otherFlags.map(f => `<span class="chip">${esc(f)}</span>`).join('')}${(r.notes || []).map(n => `<span class="chip note">${esc(n)}</span>`).join('')}</td>
     </tr>`;
   }).join('') : `<tr><td colspan="${withAI ? 11 : 10}" class="empty">${state.rows.length ? 'No rows need checking.' : 'Drop BCD PDFs above to build the schedule.'}</td></tr>`;
 
@@ -252,7 +301,7 @@ function pick(i, f, which) {
   const label = { ends: 'source / destination', type: 'cable type', size: 'cores & size', band: 'band' }[f];
   row.flags = row.flags.filter(x => !(/^AI (reads|review)/.test(x) && x.includes(label)));
   if (!Object.values(row.check.fields).some(x => x.status === 'differ')) {
-    row.check.status = 'agreed';
+    row.check.status = 'resolved';
     row.flags = row.flags.filter(x => !/^AI (reads|review)/.test(x));
   }
   render();
@@ -295,7 +344,7 @@ function exportJson() {
   const out = {
     generated: new Date().toISOString(), header: header(),
     drawings: state.drawings.map(d => ({ file: d.file, drawing: d.drawing, panel: d.panel, cables: d.cables })),
-    ai: state.ai ? { provider: state.ai.provider, model: state.ai.model, summary: state.ai.summary, log: state.ai.log, savedAnswers: state.ai.store } : null,
+    ai: state.ai ? { provider: state.ai.provider, model: state.ai.model, mode: state.ai.mode, stats: state.ai.stats, summary: state.ai.summary, log: state.ai.log, savedAnswers: state.ai.store } : null,
     rows: state.rows,
   };
   saveFile(`${safeName(header().projectTitle)}_cables.json`, JSON.stringify(out, null, 2));
@@ -322,7 +371,7 @@ $('#direction').addEventListener('change', remerge);
 $('#only-flagged').addEventListener('change', e => { state.onlyFlagged = e.target.checked; render(); });
 $('#drawings').addEventListener('click', e => {
   const i = e.target.dataset.remove; if (i === undefined) return;
-  const [d] = state.drawings.splice(+i, 1); state.sources.delete(d.file); remerge();
+  const [d] = state.drawings.splice(+i, 1); state.sources.delete(d.file); pageCache.delete(d.file); remerge();
 });
 $('#tbody').addEventListener('input', e => {
   const td = e.target.closest('td[data-k]'); if (!td) return;
@@ -333,7 +382,7 @@ $('#tbody').addEventListener('click', e => { const b = e.target.closest('button.
 $('#btn-xlsx').addEventListener('click', exportXlsx);
 $('#btn-json').addEventListener('click', exportJson);
 $('#btn-csv').addEventListener('click', exportReview);
-$('#btn-clear').addEventListener('click', () => { state.drawings = []; state.rows = []; state.sources.clear(); state.ai = null; render(); status('Cleared.'); });
+$('#btn-clear').addEventListener('click', () => { state.drawings = []; state.rows = []; state.ruleRows = []; state.sources.clear(); pageCache.clear(); state.ai = null; render(); status('Cleared.'); });
 $('#btn-ai').addEventListener('click', () => runAI(false));
 $('#btn-ai-stop').addEventListener('click', () => { if (aiRun) { aiRun.stopped = true; aiRun.last = 'Stopping'; $('#btn-ai-stop').disabled = true; } });
 $('#ai-result').addEventListener('click', e => { if (e.target.id === 'btn-ai-retry') runAI(true); });

@@ -323,7 +323,7 @@ export function extractDrawing(geom, fileName = '', rules = DEFAULT_RULES) {
     const { x, y, dx, dy } = end;
     // a) header strip
     const sp = stripAt(x, y, 30);
-    if (sp) return { kind: 'panel', name: sp.name, way: sp.column(x).description };
+    if (sp) { const col = sp.column(x); return { kind: 'panel', name: sp.name, way: col.description, how: 'strip', bbox: [col.x0, sp.y0, col.x1, sp.y1] }; }
     // b) a box edge: of the boxes touched, take the biggest one with a name in it
     //    (an isolator box can hold smaller boxes, e.g. around an E.S symbol)
     let boxHit = null;
@@ -337,12 +337,12 @@ export function extractDrawing(geom, fileName = '', rules = DEFAULT_RULES) {
     if (boxHit) {
       const { r, inner, words } = boxHit;
       const sp2 = strips.find(st => r.y0 >= st.y1 - 5 && r.y0 - st.y1 < 30 && r.x0 > st.x0 && r.x1 < st.x1);
-      if (sp2) return { kind: 'panel', name: sp2.name, way: sp2.column((r.x0 + r.x1) / 2).description };
-      return { kind: 'box', name: words.join(' '), box: r, first: inner.find(t => !NOISE_RE.test(t.str)) };
+      if (sp2) { const col = sp2.column((r.x0 + r.x1) / 2); return { kind: 'panel', name: sp2.name, way: col.description, how: 'strip', bbox: [col.x0, sp2.y0, col.x1, r.y1] }; }
+      return { kind: 'box', name: words.join(' '), box: r, first: inner.find(t => !NOISE_RE.test(t.str)), how: 'box', bbox: [r.x0, r.y0, r.x1, r.y1] };
     }
     // c) nearest free text block roughly in line with the cable: ahead of the line end,
     //    or very close to it. Text far off to the side belongs to something else.
-    let best = null, bestScore = Infinity;
+    let best = null, bestScore = Infinity, second = Infinity, bestD = 0, bestLat = 0;
     for (const b of blocks) {
       const d = boxDist(x, y, b);
       const corners = [[b.x0, b.y0], [b.x1, b.y0], [b.x0, b.y1], [b.x1, b.y1]];
@@ -352,26 +352,41 @@ export function extractDrawing(geom, fileName = '', rules = DEFAULT_RULES) {
       const ok = along > 0 ? d <= 260 && lateral <= Math.max(45, along * 0.5) : d <= 50;
       if (!ok) continue;
       const score = d + lateral * 1.5 + (along > 0 ? 0 : 30);
-      if (score < bestScore) { bestScore = score; best = b; }
+      if (score < bestScore) { second = bestScore; bestScore = score; best = b; bestD = d; bestLat = lateral; }
+      else if (score < second) second = score;
     }
     if (best) {
+      // how clear-cut the choice was: far away, off to the side, or a close runner-up
+      const how = { how: 'text', dist: Math.round(bestD), lateral: Math.round(bestLat), margin: isFinite(second) ? Math.round(second - bestScore) : 999, bbox: [best.x0, best.y0, best.x1, best.y1] };
       const raw = best.lines.filter(w => !NOISE_RE.test(w));
       const joined = raw.join(' ');
       if (/^(FROM|TO|SEE)\s+DRAWING/i.test(joined)) {
         const num = (raw.slice(1).join('').replace(/\s+/g, '').match(DWG_RE) || [''])[0];
         const note = (joined.match(/\(([^)]*)\)\s*$/) || ['', ''])[1];
         const verb = joined.match(/^(FROM|TO|SEE)/i)[1].toUpperCase();
-        return { kind: 'offsheet', verb, drawing: num, note, name: '', text: joined, block: best };
+        return { kind: 'offsheet', verb, drawing: num, note, name: '', text: joined, block: best, ...how };
       }
-      if (/^FROM\s+DNO$/i.test(joined) || /^DNO\b/i.test(joined)) return { kind: 'dno', name: 'DNO', block: best };
+      if (/^FROM\s+DNO$/i.test(joined) || /^DNO\b/i.test(joined)) return { kind: 'dno', name: 'DNO', block: best, ...how };
       // controller just under a strip belongs to that board
       const sp3 = /CONTROLLER/i.test(joined) && strips.find(st => best.y0 - st.y1 < 40 && best.y0 >= st.y1 - 5 && best.x0 > st.x0 && best.x1 < st.x1);
-      if (sp3) return { kind: 'panel', name: sp3.name, way: sp3.column((best.x0 + best.x1) / 2).description };
+      if (sp3) { const col = sp3.column((best.x0 + best.x1) / 2); return { kind: 'panel', name: sp3.name, way: col.description, how: 'strip', bbox: [col.x0, sp3.y0, col.x1, best.y1] }; }
       const name = raw.filter(w => !TAG_RE.test(w)).join(' ');
-      return { kind: 'device', name, block: best, first: best.texts.find(t => !NOISE_RE.test(t.str)) };
+      return { kind: 'device', name, block: best, first: best.texts.find(t => !NOISE_RE.test(t.str)), ...how };
     }
     // d) nothing drawn at this end
-    return { kind: 'open', name: '', at: [Math.round(x), Math.round(y)] };
+    return { kind: 'open', name: '', at: [Math.round(x), Math.round(y)], how: 'open' };
+  };
+
+  // bounding box around everything relevant, with a margin and a minimum size, on the sheet
+  const regionFor = (boxes, points) => {
+    const xs = [], ys = [];
+    for (const b of boxes) { xs.push(b[0], b[2]); ys.push(b[1], b[3]); }
+    for (const p of points) { xs.push(p[0]); ys.push(p[1]); }
+    let x0 = Math.min(...xs) - 30, x1 = Math.max(...xs) + 30, y0 = Math.min(...ys) - 30, y1 = Math.max(...ys) + 30;
+    const minW = 240, minH = 240;
+    if (x1 - x0 < minW) { const c = (x0 + x1) / 2; x0 = c - minW / 2; x1 = c + minW / 2; }
+    if (y1 - y0 < minH) { const c = (y0 + y1) / 2; y0 = c - minH / 2; y1 = c + minH / 2; }
+    return [Math.max(0, x0), Math.max(0, y0), Math.min(geom.width, x1), Math.min(geom.height, y1)].map(Math.round);
   };
 
   // give each end a stable key (first word of its text) and tag controllers with their LIT number
@@ -428,6 +443,7 @@ export function extractDrawing(geom, fileName = '', rules = DEFAULT_RULES) {
       if (out.length >= 3) break;
     }
     out.forEach(u => used.add(u));
+    L.specBoxes = out.map(u => [u.x0, u.y0, u.x1, u.y1]);
     return out.map(u => u.str).join(' ');
   };
 
@@ -443,7 +459,13 @@ export function extractDrawing(geom, fileName = '', rules = DEFAULT_RULES) {
   for (const L of labels) {
     const rec = { ref: L.ref, band: L.band, ...parseSpec(L.specRaw), specRaw: L.specRaw, ends: [], flags: [], at: [Math.round(L.t.cx), Math.round(L.t.cy)] };
     let line = L.line;
-    if (!line) { rec.flags.push('No cable line found next to label'); resolved.push(rec); continue; }
+    const lb = [L.t.x0, L.t.y0, L.t.x1, L.t.y1];
+    if (!line) {
+      rec.flags.push('No cable line found next to label');
+      rec.uncertain = [{ code: 'no-line', text: 'no cable line was found next to the label' }];
+      rec.region = regionFor([lb], []);
+      resolved.push(rec); continue;
+    }
     let A = walk(line, false), B = walk(line, true);
     // leader: a horizontal label whose nearby line is a short leader ending in an arrow on the real cable
     const pathLen = [...new Set([...A.path, ...B.path])].reduce((a, s) => a + segLen(s), 0);
@@ -467,8 +489,10 @@ export function extractDrawing(geom, fileName = '', rules = DEFAULT_RULES) {
         line = hit;
         A = walk(line, false); B = walk(line, true);
         rec.flags.push('Label attached by leader arrow — check it points at the right cable');
+        rec.leader = true;
       }
     }
+    const pathSegs = [...new Set([...A.path, ...B.path])];
     let nA = nodeAt(A, A.path), nB = nodeAt(B, B.path);
     nA.pos = [Math.round(A.x), Math.round(A.y)]; nB.pos = [Math.round(B.x), Math.round(B.y)];
     for (const n of [nA, nB]) finishNode(n);
@@ -482,6 +506,23 @@ export function extractDrawing(geom, fileName = '', rules = DEFAULT_RULES) {
       }
     }
     rec.ends = [nA, nB];
+    // reasons to doubt this reading that a second look at the drawing could settle
+    const why = [];
+    if (rec.leader) why.push({ code: 'leader', text: 'the label is joined to its cable by a leader arrow' });
+    for (const [i, n] of rec.ends.entries()) {
+      const which = i === 0 ? 'one end' : 'the other end';
+      if (n.fromColumn) why.push({ code: 'column', end: i, text: `nothing was found at ${which}, so the name was taken from the board way description` });
+      else if (n.how === 'text' && (n.dist > 150 || n.lateral > 15 || n.margin < 25))
+        why.push({ code: 'loose', end: i, text: `the name at ${which} ("${n.name || n.text || ''}") was the nearest text, ${n.margin < 25 ? 'with another label almost as close' : n.dist > 150 ? `${n.dist} pt away from the line end` : 'off to the side of the line'}` });
+      else if (n.kind === 'open' && !(rec.ends[1 - i].kind === 'panel' && /INCOMER|\bFROM\b/i.test(rec.ends[1 - i].way || '')))
+        why.push({ code: 'open', end: i, text: `nothing was found at ${which} of the line` });
+    }
+    if (!rec.size || !rec.type) why.push({ code: 'spec', text: 'the cable size or type text was not found next to the label' });
+    rec.uncertain = why;
+    // close-up area: label + traced line + both ends (+ the board way above, if one end is a board)
+    const boxes = [[lb[0] - 50, lb[1] - 50, lb[2] + 50, lb[3] + 50], ...(L.specBoxes || []), ...rec.ends.map(n => n.bbox).filter(Boolean)];
+    for (const sg of pathSegs) boxes.push([Math.min(sg.x1, sg.x2), Math.min(sg.y1, sg.y2), Math.max(sg.x1, sg.x2), Math.max(sg.y1, sg.y2)]);
+    rec.region = regionFor(boxes, rec.ends.map(n => n.pos).filter(Boolean));
     resolved.push(rec);
   }
 
@@ -513,6 +554,17 @@ export function extractDrawing(geom, fileName = '', rules = DEFAULT_RULES) {
 const RANK = n => n.kind === 'dno' ? 0
   : n.kind === 'panel' ? (/INCOMER|\bFROM\b/i.test(n.way || '') ? 4 : 0)
   : n.kind === 'offsheet' ? 1 : n.kind === 'box' ? 2 : 3;
+
+// What sort of flag is this?  'missing' and 'conflict' need a person (the information
+// isn't on the drawings, or the drawings contradict each other); 'reading' means the
+// tool may have misread the drawing, so a closer look (by the AI) can settle it;
+// 'note' just records an assumption made by a rule.
+export function classifyFlag(f) {
+  if (/differs between drawings|disagree|More than two ends|normally .*drawing says/i.test(f)) return 'conflict';
+  if (/not uploaded|Incoming supply|No voltage band/i.test(f)) return 'missing';
+  if (/assumed .* from prefix/i.test(f)) return 'note';
+  return 'reading';
+}
 
 export function mergeDrawings(drawings, rules = DEFAULT_RULES) {
   const byClient = new Map();
@@ -616,7 +668,13 @@ export function mergeDrawings(drawings, rules = DEFAULT_RULES) {
       voltage: voltageForBand(band, rules), band,
       length: '', cpc: '', install: '', comments: '',
       sheets: [...new Set(inst.map(i => sheetOf(i.d)))], flags: [...new Set(flags)],
+      // where each sheet drew this cable, and what (if anything) the reading is unsure of
+      views: inst.map(i => ({ sheet: sheetOf(i.d), file: i.d.file, region: i.c.region, uncertain: i.c.uncertain || [] })),
     });
+    const row = rows[rows.length - 1];
+    row.flagKinds = row.flags.map(classifyFlag);
+    row.doubts = row.views.flatMap(v => v.uncertain.map(u => ({ ...u, sheet: v.sheet })));
+    row.confidence = row.doubts.length ? 'low' : 'high';
   }
   // same ref drawn twice on one sheet
   rows.sort(rules.sortRows);

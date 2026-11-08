@@ -19,12 +19,12 @@ import { DEFAULT_RULES } from '../rules.js';
 import { toSheetScale } from './render.js';
 import { PROMPT_VERSION, READ_SYSTEM, READ_SYSTEM_NO_LIST, READ_SCHEMA, readUserText, REVIEW_SYSTEM, REVIEW_SCHEMA, reviewUserText } from './prompt.js';
 
-const REF_RE = /^[A-Z]{1,3}\d{2}[A-Z]{2}[0-9X]{3,5}(?:-\d+)?$/;
-const FIELDS = [['ends', 'Source / destination'], ['type', 'Cable type'], ['size', 'Cores & size'], ['band', 'Band']];
+export const REF_RE = /^[A-Z]{1,3}\d{2}[A-Z]{2}[0-9X]{3,5}(?:-\d+)?$/;
+export const FIELDS = [['ends', 'Source / destination'], ['type', 'Cable type'], ['size', 'Cores & size'], ['band', 'Band']];
 const blank = v => !v || /^unknown$/i.test(String(v).trim());
-const clean = v => (blank(v) ? '' : String(v).replace(/\s+/g, ' ').trim());
+export const clean = v => (blank(v) ? '' : String(v).replace(/\s+/g, ' ').trim());
 const normName = s => String(s || '').toLowerCase().replace(/²/g, '2').replace(/×/g, 'x').replace(/[^a-z0-9&+]/g, '');
-const normBand = b => {
+export const normBand = b => {
   const m = String(b || '').toUpperCase().replace(/\s+/g, '').match(/^\(?(B1&B2|B1\+B2|B1\/B2|B1|B2)\)?$/);
   return m ? m[1].replace(/[+\/]/, '&') : '';
 };
@@ -58,7 +58,7 @@ function sanitiseRead(json, sheet, listed) {
   return { board: clean(json?.board_name), cables, extras: keptExtras, missing, notes };
 }
 
-function toEnd(e) {
+export function toEnd(e) {
   const kind = e?.kind, name = clean(e?.name);
   if (kind === 'board_way') return { kind: 'panel', name: name.replace(/\s*-\s*FORM\s*\w+\s*$/i, ''), way: clean(e?.way) };
   if (kind === 'box') return { kind: 'box', name };
@@ -73,7 +73,7 @@ function toEnd(e) {
   return { kind: 'unknown', name: '' };
 }
 
-function toCable(c) {
+export function toCable(c) {
   let size = clean(c.cores_size), type = clean(c.cable_type);
   // avoid repeating the type when the AI put the whole specification in the size field
   if (size && type && normName(size).includes(normName(type))) type = '';
@@ -85,11 +85,11 @@ function toCable(c) {
 }
 
 // ------------------------------------------------------------------ 3. comparing
-function fieldText(row, f) {
+export function fieldText(row, f) {
   if (f === 'ends') return [row.source, row.destination].filter(Boolean).join(' ↔ ') || '(not found)';
   return row[f] || '(not found)';
 }
-function compareField(f, r, a) {
+export function compareField(f, r, a) {
   if (f === 'ends') {
     const R = [r.source, r.destination].filter(Boolean).map(normName);
     const A = [a.source, a.destination].filter(Boolean).map(normName);

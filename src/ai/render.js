@@ -62,3 +62,19 @@ export async function renderPageForAI(page, { makeCanvas, encode, area, mime = '
 
 // Position on the sheet (PDF points, viewport space) -> 0–1000 scale
 export const toSheetScale = (x, y, width, height) => [Math.round(x / width * 1000), Math.round(y / height * 1000)];
+
+// One close-up of part of the sheet. `region` = [x0, y0, x1, y1] in PDF points.
+// Rendered so its longer side is about `maxPx` pixels (text a few mm high on A1 comes
+// out large and sharp), never more than 6× the PDF size.
+export async function renderRegion(page, region, { makeCanvas, encode, maxPx = 1400, mime = 'image/jpeg' }) {
+  const [x0, y0, x1, y1] = region;
+  const w = x1 - x0, h = y1 - y0;
+  const scale = Math.min(maxPx / Math.max(w, h), 6);
+  const vp = page.getViewport({ scale, offsetX: -x0 * scale, offsetY: -y0 * scale });
+  const W = Math.max(1, Math.round(w * scale)), H = Math.max(1, Math.round(h * scale));
+  const c = makeCanvas(W, H);
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, W, H);
+  await page.render({ canvasContext: ctx, viewport: vp, background: 'rgb(255,255,255)' }).promise;
+  return { mime, data: await encode(c), width: W, height: H };
+}

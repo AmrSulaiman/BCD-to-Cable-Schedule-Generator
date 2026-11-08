@@ -6,7 +6,7 @@
     "build": "node build.mjs",
     "build:local": "node build.mjs --local",
     "extract": "node cli.mjs out.json",
-    "test": "node test/run-all.mjs",
+    "test": "node test/run-all.mjs && node test/targeted.mjs",
     "test:update-baseline": "node test/run-all.mjs --update-baseline"
   },
   "dependencies": {
