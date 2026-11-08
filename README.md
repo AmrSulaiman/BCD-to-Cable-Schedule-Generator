@@ -43,14 +43,16 @@ Any cell in the table can be corrected before downloading.
 | Cable ref | The label on the drawing, exactly as drawn, including `LC` prefixes and `-1` suffixes |
 | Source / Destination | Traced from the drawing (see below), written as full names |
 | Cable type | Text beside the cable, e.g. `XLPE/SWA BS5467`, `6181-Y`. Vendor cables: `VENDOR CABLE`. SUBCAB cables: `SUBCAB` |
-| No. of cores & size | Text beside the cable, normalised to `4c x 2.5mm2`, `1PR x 0.75mm2`, `3 x 1c x 10mm2`. Vendor cables: `VENDOR CABLE`. SUBCAB cables: the full text as drawn, e.g. `S3x2.5+3x2.5/3+S(4×0.5) SUBCAB` |
+| No. of cores & size | Text beside the cable (written with or without the `x`, e.g. `3c 70mm²`), normalised to `4c x 2.5mm2`, `1PR x 0.75mm2`, `3 x 1c x 10mm2`. Vendor cables: `VENDOR CABLE`. SUBCAB cables: the full text as drawn, e.g. `S3x2.5+3x2.5/3+S(4×0.5) SUBCAB` |
 | Voltage | From the band: **B1 → 24V, B2 → 400V, B1&B2 → 400V** |
 | Voltage band | From the label, e.g. `(B2)`. If missing, assumed from the prefix (L/LC → B2, CE → B1) and marked for checking |
 | Design length, CPC type, Installation method, Comments | Left blank |
 
-**Names.** Names are written as they are labelled on the BCD, in normal text (`STORM RETURN PUMP NO.1` → `Storm Return Pump No.1`). Board names come from the REFERENCE row of the header strip, in full (`Marshalling Box - Valve Pad`); only a `- Form 2a` suffix is dropped. If the REFERENCE row is empty, the board name written across another top row is used. Controllers are named as labelled (`Controller`, plus its tag such as `LIT003` when shown). Equipment names come from the box text (`JB P01`) or the label under the symbol (`STORM RETURN PUMP NO.1` → `Storm Return Pump No.1`). Power ratings like `5.5 kW` and asset tag lines like `07808-SU1-NA1-BLD01-HT001` are dropped. Acronyms stay in capitals (`JB`, `LCP`, `CSO`, `EDM`, `SPD` …). Abbreviations listed in `src/rules.js` are written out (`EB` → `Earth Bar`).
+**Names.** Names are written as they are labelled on the BCD, in normal text (`STORM RETURN PUMP NO.1` → `Storm Return Pump No.1`). Board names come from the REFERENCE row of the header strip, in full (`Marshalling Box - Valve Pad`); only a `- Form 2a` suffix is dropped. If the REFERENCE row is empty, the board name written across another top row is used. Controllers are named as labelled (`Controller`, plus its tag such as `LIT003` when shown). Equipment names come from the box text (`JB P01`) or the label under the symbol (`STORM RETURN PUMP NO.1` → `Storm Return Pump No.1`). Power and current ratings like `5.5 kW` or `184A FLC` (including placeholders like `XXA FLC`) and asset tag lines like `07808-SU1-NA1-BLD01-HT001` are dropped. Acronyms stay in capitals (`JB`, `LCP`, `CSO`, `EDM`, `SPD` …). Abbreviations listed in `src/rules.js` are written out (`EB` → `Earth Bar`).
 
-**Other drawings.** A cable shown on two sheets becomes one row, and an end missing on one sheet is filled in from the other. On the MCC sheet a cable runs to a box called `PLANT DISTRIBUTION BOARD`; on the Plant DB sheet the same cable arrives at the MAINS INCOMER way, so the two are joined by name. `FROM DRAWING 80065564-…-00005` is matched to the uploaded sheet whose title block has that client drawing number, and replaced with that sheet's board name. A note such as `(TO EDM CONTROLLER)` names the equipment on the other sheet.
+**Other drawings.** A cable shown on two sheets becomes one row, and an end missing on one sheet is filled in from the other. On the MCC sheet a cable runs to a box called `PLANT DISTRIBUTION BOARD`; on the Plant DB sheet the same cable arrives at the MAINS INCOMER way, so the two are joined by name. `FROM DRAWING 80065564-…-00005` is matched to the uploaded sheet whose title block has that client drawing number, and replaced with that sheet's board name. A note such as `(TO EDM CONTROLLER)` names the equipment on the other sheet. A note or box that names another sheet's board (`FROM DT MCC`, `VACFLUSH CONTROL PANEL`, `ACTUATOR DISTRIBUTION BOARD`) is joined to that board when its words match exactly one uploaded board name. A cable that leaves a board way on two sheets with nothing drawn at either far end runs board to board (e.g. an interface cable between two panels).
+
+**One number, two cables.** If the same reference is used for two different cables (labels that together would have more than two ends), each cable gets its own row and both are marked as a drawing error.
 
 **Direction.** Default is *Source = supply end* (board → JB → equipment). The page has a setting to reverse it. The supply end is decided in this order:
 1. `FROM DRAWING` / `TO DRAWING` wording, when every sheet showing the cable agrees
@@ -71,6 +73,12 @@ Any cell in the table can be corrected before downloading.
 - An incomer with nothing drawn at its far end (left blank)
 - A destination taken from the board way description
 - No line, size, type, source or destination found
+- **Drawing errors** (copied as written, marked so the drawing can be fixed):
+  - the same reference used for two different cables
+  - two references on the same cable line (one is probably left over)
+  - a cable number with a different number of digits from the company standard (4, set as `refDigits` in `src/rules.js`), e.g. `L25DT10003`
+  - a reference whose year/area part differs from the rest of the set, e.g. `E24DT…` among `…25DT…`
+  - cable type spelt `XPLE` instead of XLPE
 
 ---
 
@@ -83,7 +91,7 @@ PDF ──► pdfread.js ──► engine.js: extractDrawing ──► engine.js
 
 | File | Job |
 |---|---|
-| `src/pdfread.js` | Uses pdf.js to read every text string (with position and angle) and every straight line from the page |
+| `src/pdfread.js` | Uses pdf.js to read every text string (with position and angle) and every straight line from the page; wavy cable lines (chains of small curves) are turned into one straight line |
 | `src/engine.js` | `extractDrawing`: finds the title block, the board header strip and its columns, boxes, cable labels; pairs each label with its size/type text and its cable line; follows the line both ways to find what is at each end. `mergeDrawings`: joins all sheets, resolves cross-references, sets direction, checks, sorts |
 | `src/rules.js` | Company conventions: acronyms, abbreviations, band → voltage, prefix → band, row order, direction |
 | `src/excel.js` | Loads the template with ExcelJS and fills the header (I1–I4, A3) and rows from row 6, copying row 6's style |
@@ -98,8 +106,8 @@ PDF ──► pdfread.js ──► engine.js: extractDrawing ──► engine.js
 ### How a cable is traced
 
 1. **Label.** Any text matching `L25NA1001`, `CE25NA1004-1`, `E25NA0001` … with an optional `(B1)`.
-2. **Line.** The nearest line parallel to the label within about 1.5 text heights. Horizontal labels beside a vertical line (vendor `LC` labels) and labels with a leader arrow are handled too.
-3. **Size/type.** Text on the other side of the line from the label, same orientation.
+2. **Line.** The nearest line parallel to the label within about 1.5 text heights. Lines may lean slightly (about 1°, more for wavy lines); wavy lines, often used for vendor cables, count as cable lines. Horizontal labels beside a vertical line (vendor `LC` labels) and labels with a leader arrow are handled too.
+3. **Size/type.** Text on the other side of the line from the label, same orientation. Small marker words beside the cable (`POWER`, `EARTH`, `IMAS BU12`), a separately drawn `²` and text drawn twice (bold) are ignored.
 4. **Ends.** The line is followed through joins and across the small gap at the `P`/`C` marker until it stops. At each end, in order:
    - just under a header strip → that board, and the column's DESCRIPTION gives the way (a sheet can have more than one strip)
    - on the edge of a box with writing in it → that writing (`JB P01`, `ISO M01`; symbol text like `E.S` is ignored)
@@ -194,6 +202,8 @@ test/projects/
 
 **Catches regressions.** `test/baseline.json` stores the last accepted scores. If a change makes any project score lower, the run fails. After an improvement, `npm run test:update-baseline` accepts the new scores.
 
+**Projects without a checked schedule** can use a snapshot instead: `snapshot.json`, the tool's output after checking it by hand against the drawings (`node test/run-all.mjs --update-snapshot`). It cannot prove the output is right, only that later changes do not make it worse. `philips-road` works this way.
+
 **Adding a project:** create `test/projects/<project-name>/`, put in the BCD PDFs and the correct schedule (.xlsx), and commit. The next run reports its scores as *new*. Fix what it shows, then update the baseline.
 
 Current results:
@@ -202,8 +212,11 @@ Current results:
 |---|---|---|---|---|---|---|---|
 | Gaskell Street (`gaskell-st`) | 4 | 54/54 | 52/54 | 49/54 | 53/54 | 54/54 | 54/54 |
 | Knutsford (`knutsford-dt`) | 4 | 49/49 | 48/49 | 49/49 | 49/49 | 49/49 | 49/49 |
+| Philips Road (`philips-road`, snapshot) | 3 | 66/66 | 63/66 | 66/66 | 66/66 | 66/66 | 66/66 |
 
 **Gaskell Street** is compared with the schedule issued to the client. The remaining differences are in that schedule rather than the tool: it writes direction two different ways (field → board on the DT sheet, board → field on the others), uses a short name (`CSO LCP`) in one place, and has cable types that differ from the drawing text. E25NA0001 points to a drawing that was not in the set.
+
+**Philips Road** was drawn differently again: wavy lines for vendor cables, lines that lean slightly, sizes without the `x` (`3c 70mm²`), and sheets linked by board name (`FROM DT MCC`). Its drawings also contain numbering errors (5-digit numbers, numbers used twice, `E24` among `25`, a left-over label), which are marked as drawing errors. It has no issued schedule, so it is checked against a snapshot; the 3 differences are the numbers used for two cables, which the snapshot can only list once.
 
 **Knutsford** was drawn differently (two header strips on one sheet, a board name in the COMPARTMENT row, sheets linked by board name instead of drawing numbers, cables with nothing drawn at the far end), which led to the rules for those cases. Its hand-made schedule had errors (renumbered cables, sizes and names that differ from the BCDs), so the test copy was corrected to follow the drawings; every correction is listed in `test/projects/knutsford-dt/CORRECTIONS.md` and the schedule as received is kept in `original/`. The one remaining difference is a drafting error on the MCC BCD: the third pump is labelled `STORM TRANSFER PUMP NO.1` although its board way is `STORM TRANSFER PUMP NO.2`.
 

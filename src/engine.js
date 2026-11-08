@@ -10,13 +10,18 @@ const REF_RE = /^([A-Z]{1,3}\d{2}[A-Z]{2}[0-9X]{3,5}(?:-\d+)?)\s*(?:\(\s*(B\d(?:
 const BAND_RE = /^\(\s*(B\d(?:\s*[&+\/]\s*B\d)?)\s*\)$/;
 export const DWG_RE = /\d{6,}-\d{2}-[A-Z]{2,4}-\d{4,6}-[A-Z]{2}-[A-Z]{2}-[A-Z]-\d{4,6}/;
 // Text that is part of a symbol, not a name
-const NOISE_RE = /^(P|C|E|M|H|TH|SL|VSD|DOL|E\.\s?S\.?|f\d|\d~|NOTE\s*\d+|LIT\d+|[\d.]+\s*kW)$/i;
+const NOISE_RE = /^(P|C|E|M|H|TH|SL|VSD|DOL|E\.\s?S\.?|f\d|\d~|NOTE\s*\d+|LIT\d+|[\d.]+\s*kW|[\dX.]+\s*A\s*FLC|[\dX.]+\s*kW\s+[\dX.]+\s*A\s*FLC)$/i;   // FLC = full-load current, incl. placeholders like XXA FLC
 // Asset tag lines printed under equipment names, e.g. 07808-SU1-NA1-BLD01-HT001
 const TAG_RE = /^[A-Z0-9]{2,}(?:-[A-Z0-9]{2,}){3,}$/;
 
 const dist = (ax, ay, bx, by) => Math.hypot(ax - bx, ay - by);
-const isV = s => Math.abs(s.x1 - s.x2) < 0.6;
-const isH = s => Math.abs(s.y1 - s.y2) < 0.6;
+// vertical / horizontal, allowing a slight lean (some drafters' lines are a fraction of a
+// degree off, and a wavy cable's overall line can lean a couple of degrees)
+const isV = s => Math.abs(s.x1 - s.x2) < Math.max(0.6, Math.abs(s.y1 - s.y2) * (s.wavy ? 0.06 : 0.02));
+const isH = s => Math.abs(s.y1 - s.y2) < Math.max(0.6, Math.abs(s.x1 - s.x2) * (s.wavy ? 0.06 : 0.02));
+// where a (nearly) vertical line is at height y / a (nearly) horizontal line at x
+const xAt = (s, y) => (s.y2 === s.y1 ? s.x1 : s.x1 + (s.x2 - s.x1) * Math.min(1, Math.max(0, (y - s.y1) / (s.y2 - s.y1))));
+const yAt = (s, x) => (s.x2 === s.x1 ? s.y1 : s.y1 + (s.y2 - s.y1) * Math.min(1, Math.max(0, (x - s.x1) / (s.x2 - s.x1))));
 const segLen = s => dist(s.x1, s.y1, s.x2, s.y2);
 function ptSegDist(px, py, s) {
   const vx = s.x2 - s.x1, vy = s.y2 - s.y1;
@@ -193,7 +198,9 @@ export function parseSpec(raw) {
   if (/SUBCAB/i.test(s)) {
     return { type: 'SUBCAB', size: s.trim() };
   }
-  const m = s.match(/((?:\d+\s*[x×]\s*)?\d+\s*(?:c|pr|g)\s*[x×]\s*\d+(?:\.\d+)?\s*(?:mm²|mm2|mm)?)/i);
+  const m = s.match(/((?:\d+\s*[x×]\s*)?\d+\s*(?:c|pr|g)\s*[x×]\s*\d+(?:\.\d+)?\s*(?:mm²|mm2|mm)?)/i)
+    // some drafters leave out the "x": "3c 70mm²" (then the mm is required)
+    || s.match(/((?:\d+\s*[x×]\s*)?\d+\s*(?:c|pr|g)\s+\d+(?:\.\d+)?\s*(?:mm²|mm2|mm))/i);
   if (m) {
     const type = (s.slice(0, m.index) + ' ' + s.slice(m.index + m[0].length)).replace(/\s+/g, ' ').trim();
     return { type, size: normaliseSize(m[1]) };
@@ -250,7 +257,8 @@ export function extractDrawing(geom, fileName = '', rules = DEFAULT_RULES) {
       if (Math.abs(t.angle) === 90 && isV(s)) {
         const y0 = Math.min(s.y1, s.y2), y1 = Math.max(s.y1, s.y2);
         if (y1 < t.y0 - 5 || y0 > t.y1 + 5) continue;
-        d = s.x1 >= t.x1 ? s.x1 - t.x1 : (s.x1 <= t.x0 ? t.x0 - s.x1 : 0);
+        const sx = xAt(s, t.cy);
+        d = sx >= t.x1 ? sx - t.x1 : (sx <= t.x0 ? t.x0 - sx : 0);
         if (d > sz * 1.6) continue;
       } else if (t.angle === 0 && isH(s)) {
         const x0 = Math.min(s.x1, s.x2), x1 = Math.max(s.x1, s.x2);
@@ -431,6 +439,11 @@ export function extractDrawing(geom, fileName = '', rules = DEFAULT_RULES) {
         cand.push(u); prevBottom = u.y1;
       }
     }
+    // the "²" of mm² is sometimes a separate little "2"; bold text is sometimes drawn twice
+    // much smaller writing beside a cable is a marker (POWER, EARTH, IMAS BU12), not its specification
+    const SPEC_LIKE = /(mm|PR|\dc\b|\dc\s|VENDOR|SUBCAB|XLPE|XPLE|SWA|BS\d|G&Y|-Y|-X|\dG\d|\d{4}X|CAT\d)/i;
+    cand = cand.filter((u, i) => !/^[2²]$/.test(u.str.trim()) && !(u.size < sz * 0.75 && !SPEC_LIKE.test(u.str)) &&
+      !cand.slice(0, i).some(v => v.str === u.str && Math.abs(v.x0 - u.x0) < 1 && Math.abs(v.y0 - u.y0) < 1));
     // stop at the first text that is closer to another label
     const out = [];
     for (const u of cand) {
@@ -506,6 +519,14 @@ export function extractDrawing(geom, fileName = '', rules = DEFAULT_RULES) {
       }
     }
     rec.ends = [nA, nB];
+    // two different references on one and the same line
+    const lineKey = [nA.pos, nB.pos].map(p => p.join(',')).sort().join('|');
+    const twin = resolved.find(o => o.lineKey === lineKey && o.ref !== rec.ref);
+    rec.lineKey = lineKey;
+    if (twin) {
+      const msg = `Drawing error: two references on the same cable line (${twin.ref} and ${rec.ref}); one of them is probably left over`;
+      rec.flags.push(msg); if (!twin.flags.includes(msg)) twin.flags.push(msg);
+    }
     // reasons to doubt this reading that a second look at the drawing could settle
     const why = [];
     if (rec.leader) why.push({ code: 'leader', text: 'the label is joined to its cable by a leader arrow' });
@@ -543,6 +564,7 @@ export function extractDrawing(geom, fileName = '', rules = DEFAULT_RULES) {
     page: { width: Math.round(geom.width), height: Math.round(geom.height), area, textCount: texts.length },
     drawing: { ...tb, _titleBlockX: undefined },
     panel: strip ? { name: strip.name, rawName: strip.rawName } : null,
+    boards: strips.map(st => st.name).filter(Boolean),   // every header strip's board name
     cables: resolved,
     issues,
   };
@@ -560,6 +582,7 @@ const RANK = n => n.kind === 'dno' ? 0
 // tool may have misread the drawing, so a closer look (by the AI) can settle it;
 // 'note' just records an assumption made by a rule.
 export function classifyFlag(f) {
+  if (/^Drawing error/i.test(f)) return 'conflict';
   if (/differs between drawings|disagree|More than two ends|normally .*drawing says/i.test(f)) return 'conflict';
   if (/not uploaded|Incoming supply|No voltage band/i.test(f)) return 'missing';
   if (/assumed .* from prefix/i.test(f)) return 'note';
@@ -587,20 +610,75 @@ export function mergeDrawings(drawings, rules = DEFAULT_RULES) {
       if (firstWord && noteName.toLowerCase().includes(firstWord)) alias.set(sheetOf(target) + '|' + m.key, noteName);
     }
   }
+  // A note or box that names the board of another uploaded sheet ("FROM DT MCC",
+  // "VACFLUSH CONTROL PANEL") is that board. Matched when all its words (apart from
+  // FROM/TO and generic words) are in exactly one other sheet's board name.
+  const words = x => String(x || '').toUpperCase().replace(/[^A-Z0-9&]+/g, ' ').trim().split(' ').filter(Boolean);
+  const GENERIC = new Set(['FROM', 'TO', 'CONTROL', 'THE', 'NEW']);
+  const boardNamed = (n, d) => {
+    if (!['device', 'box'].includes(n.kind) || !n.name) return null;
+    const w = words(n.name).filter(x => !GENERIC.has(x));
+    if (w.length < 2) return null;
+    const hits = [];
+    for (const o of drawings) if (o !== d) for (const b of (o.boards || (o.panel ? [o.panel.name] : []))) if (w.every(x => words(b).includes(x))) hits.push(b);
+    const uniq = [...new Set(hits.map(h => h.toUpperCase()))];
+    return uniq.length === 1 ? hits[0] : null;
+  };
   const nameOf = (n, d) => {
     if (n.kind === 'offsheet') {
       const target = byClient.get(n.drawing);
       return target && target.panel ? rules.fullName(target.panel.name) : '';
     }
+    const b = boardNamed(n, d);
+    if (b) return rules.fullName(b);
     const a = n.key && alias.get(sheetOf(d) + '|' + n.key);
     return rules.fullName(a || n.name);
   };
+  const concreteOf = (c, d) => c.ends.filter(n => n.kind !== 'offsheet').map(n => nameOf(n, d)).filter(Boolean).map(x => x.toLowerCase());
 
+  // A board way with nothing drawn at its far end, whose cable leaves another board on
+  // another sheet: the cable runs board to board (e.g. an interface cable between two panels).
+  const groups0 = new Map();
+  for (const x of all) { if (!groups0.has(x.c.ref)) groups0.set(x.c.ref, []); groups0.get(x.c.ref).push(x); }
+  for (const inst of groups0.values()) for (const x of inst) {
+    const iCol = x.c.ends.findIndex(n => n.fromColumn);
+    if (iCol < 0) continue;
+    const mine = x.c.ends[1 - iCol];
+    const other = inst.find(y => y.d !== x.d && y.c.ends.some(n => n.kind === 'panel' && n.name !== mine.name));
+    if (!other) continue;
+    const board = other.c.ends.find(n => n.kind === 'panel' && n.name !== mine.name);
+    x.c = { ...x.c, ends: x.c.ends.map((n, i) => (i === iCol ? { kind: 'panel', name: board.name, way: '', pos: n.pos } : n)),
+      flags: x.c.flags.filter(f => !/^Nothing drawn at the far end/.test(f)) };
+  }
+
+  // One reference can be used (by mistake) for two different cables. Labels of the same
+  // reference are one cable when, together, they still have no more than two ends;
+  // otherwise each separate cable becomes its own row and is flagged.
   const groups = new Map();
-  for (const x of all) { if (!groups.has(x.c.ref)) groups.set(x.c.ref, []); groups.get(x.c.ref).push(x); }
+  for (const [ref, inst] of groups0) {
+    const clusters = [];
+    for (const x of inst) {
+      const mine = new Set(concreteOf(x.c, x.d));
+      const fit = clusters.find(cl => {
+        const u = new Set([...cl.ends, ...mine]);
+        return u.size <= 2;
+      });
+      if (fit) { fit.inst.push(x); mine.forEach(e => fit.ends.add(e)); }
+      else clusters.push({ inst: [x], ends: mine });
+    }
+    // don't split when it would only separate a label whose ends could not be read
+    const real = clusters.filter(cl => cl.ends.size >= 2);
+    if (real.length > 1) {
+      const where = real.map(cl => [...new Set(cl.inst.map(x => sheetOf(x.d)))].map(sh => sh.replace(/^.*-W-/, 'W-')).join('+') + ': ' + [...cl.ends].map(e => rules.fullName(e)).join(' – '));
+      for (const cl of clusters) for (const x of cl.inst) x.dup = `Reference ${ref} is used for ${real.length} different cables on the drawings (${where.join('; ')}). One of them needs a new number.`;
+      clusters.forEach((cl, i) => groups.set(i ? `${ref}#${i}` : ref, cl.inst));
+    } else groups.set(ref, inst);
+  }
   const rows = [];
-  for (const [ref, inst] of groups) {
+  for (const [gkey, inst] of groups) {
+    const ref = gkey.replace(/#\d+$/, '');
     const flags = [];
+    if (inst[0].dup) flags.push(inst[0].dup);
     const ends = [];
     const srcVotes = new Map(); // full name -> net votes (+ source / - destination)
     const seenSign = new Map();
@@ -677,6 +755,20 @@ export function mergeDrawings(drawings, rules = DEFAULT_RULES) {
     row.confidence = row.doubts.length ? 'low' : 'high';
   }
   // same ref drawn twice on one sheet
+  // checks on the references and types written on the drawings
+  const REF_PARTS = /^([A-Z]+)(\d{2}[A-Z]{2})(\d+)(?:-\d+)?$/;
+  const areaCount = new Map();
+  for (const r of rows) { const m = r.ref.match(REF_PARTS); if (m) areaCount.set(m[2], (areaCount.get(m[2]) || 0) + 1); }
+  const mainArea = [...areaCount].sort((a, b) => b[1] - a[1])[0]?.[0];
+  for (const r of rows) {
+    const m = r.ref.match(REF_PARTS);
+    if (m && rules.refDigits && m[3].length !== rules.refDigits)
+      r.flags.push(`Drawing error: the number in ${r.ref} has ${m[3].length} digits; cable numbers normally have ${rules.refDigits} (e.g. ${m[1]}${m[2]}${'1'.padStart(rules.refDigits, '0')})`);
+    if (m && mainArea && m[2] !== mainArea && areaCount.get(m[2]) * 4 < areaCount.get(mainArea))
+      r.flags.push(`Drawing error: ${r.ref} says ${m[2]}, but the other cables in this set say ${mainArea}`);
+    if (/\bXPLE\b/i.test(r.type)) r.flags.push('Drawing error: cable type is spelt "XPLE" on the drawing (normally XLPE); copied as written');
+    r.flagKinds = r.flags.map(classifyFlag);
+  }
   rows.sort(rules.sortRows);
   return { rows };
 }

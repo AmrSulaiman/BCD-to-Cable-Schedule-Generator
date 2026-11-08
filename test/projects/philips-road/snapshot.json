@@ -1,0 +1,626 @@
+{
+ "note": "Tool output checked by hand against the drawings; not an issued schedule.",
+ "rows": [
+  {
+   "ref": "E25DT0001",
+   "source": "Earth Bar",
+   "destination": "DNO",
+   "type": "6491X",
+   "size": "1c x 90mm2",
+   "voltage": "400V",
+   "band": "B2"
+  },
+  {
+   "ref": "E25DT0002",
+   "source": "Earth Bar",
+   "destination": "Gen. Connection Point",
+   "type": "6491X",
+   "size": "1c x 90mm2",
+   "voltage": "400V",
+   "band": "B2"
+  },
+  {
+   "ref": "E25DT0003",
+   "source": "Earth Bar",
+   "destination": "Philips Road DT MCC",
+   "type": "6491X",
+   "size": "1c x 90mm2",
+   "voltage": "400V",
+   "band": "B2"
+  },
+  {
+   "ref": "CE25DT005",
+   "source": "Philips Road DT MCC",
+   "destination": "JB05",
+   "type": "",
+   "size": "",
+   "voltage": "24V",
+   "band": "B1"
+  },
+  {
+   "ref": "L25DT10001",
+   "source": "DNO",
+   "destination": "Philips Road DT MCC",
+   "type": "XLPE/SWA BS5467",
+   "size": "4c x 150mm2",
+   "voltage": "400V",
+   "band": "B2"
+  },
+  {
+   "ref": "CE25DT10001",
+   "source": "Philips Road DT MCC",
+   "destination": "JB01",
+   "type": "XPLE/SWA BS5467",
+   "size": "1PR x 0.75mm2",
+   "voltage": "24V",
+   "band": "B1"
+  },
+  {
+   "ref": "LC25DT10001",
+   "source": "JB01",
+   "destination": "Storm Return Pump 1",
+   "type": "VENDOR CABLE",
+   "size": "VENDOR CABLE",
+   "voltage": "400V",
+   "band": "B2&B1"
+  },
+  {
+   "ref": "D25DT10001",
+   "source": "Philips Road DT MCC",
+   "destination": "Telemetry Outstation",
+   "type": "CAT5E UTP PVC",
+   "size": "",
+   "voltage": "24V",
+   "band": "B1"
+  },
+  {
+   "ref": "L25DT10002",
+   "source": "Gen. Connection Point",
+   "destination": "Philips Road DT MCC",
+   "type": "XLPE/SWA BS5467",
+   "size": "5c x 16mm2",
+   "voltage": "400V",
+   "band": "B2"
+  },
+  {
+   "ref": "CE25DT10002",
+   "source": "Philips Road DT MCC",
+   "destination": "JB02",
+   "type": "XPLE/SWA BS5467",
+   "size": "2c x 1.5mm2",
+   "voltage": "24V",
+   "band": "B1"
+  },
+  {
+   "ref": "LC25DT10002",
+   "source": "JB03",
+   "destination": "Storm Return Pump 2",
+   "type": "VENDOR CABLE",
+   "size": "VENDOR CABLE",
+   "voltage": "400V",
+   "band": "B2&B1"
+  },
+  {
+   "ref": "CE25DT10002-1",
+   "source": "Nrv Position Switch",
+   "destination": "JB02",
+   "type": "VENDOR CABLE",
+   "size": "VENDOR CABLE",
+   "voltage": "24V",
+   "band": "B1"
+  },
+  {
+   "ref": "L25DT10003",
+   "source": "Philips Road DT MCC",
+   "destination": "Valve Actuator Distribution Board",
+   "type": "XLPE/SWA BS5467",
+   "size": "5c x 6mm2",
+   "voltage": "400V",
+   "band": "B2"
+  },
+  {
+   "ref": "L25DT10003",
+   "source": "Philips Road DT MCC",
+   "destination": "Philips Road Vacflush Panel",
+   "type": "XLPE/SWA BS5467",
+   "size": "5c x 6mm2",
+   "voltage": "400V",
+   "band": "B2"
+  },
+  {
+   "ref": "CE25DT10003",
+   "source": "Philips Road DT MCC",
+   "destination": "JB03",
+   "type": "XPLE/SWA BS5467",
+   "size": "1PR x 0.75mm2",
+   "voltage": "24V",
+   "band": "B1"
+  },
+  {
+   "ref": "LC25DT10003",
+   "source": "JB05",
+   "destination": "Scavenger Pump",
+   "type": "VENDOR CABLE",
+   "size": "VENDOR CABLE",
+   "voltage": "400V",
+   "band": "B2&B1"
+  },
+  {
+   "ref": "E24DT10003",
+   "source": "Philips Road DT MCC",
+   "destination": "JB01",
+   "type": "6491X",
+   "size": "1c x 70mm2",
+   "voltage": "",
+   "band": ""
+  },
+  {
+   "ref": "L25DT10004",
+   "source": "Building Services Distribution Board",
+   "destination": "Philips Road DT MCC",
+   "type": "XLPE/SWA BS5467",
+   "size": "5c x 6mm2",
+   "voltage": "400V",
+   "band": "B2"
+  },
+  {
+   "ref": "CE25DT10004",
+   "source": "Philips Road DT MCC",
+   "destination": "JB04",
+   "type": "XPLE/SWA BS5467",
+   "size": "2c x 1.5mm2",
+   "voltage": "24V",
+   "band": "B1"
+  },
+  {
+   "ref": "E24DT10004",
+   "source": "Philips Road DT MCC",
+   "destination": "JB03",
+   "type": "6491X",
+   "size": "1c x 70mm2",
+   "voltage": "",
+   "band": ""
+  },
+  {
+   "ref": "CE25DT10004-1",
+   "source": "Nrv Position Switch",
+   "destination": "JB04",
+   "type": "VENDOR CABLE",
+   "size": "VENDOR CABLE",
+   "voltage": "24V",
+   "band": "B1"
+  },
+  {
+   "ref": "L25DT10005",
+   "source": "Philips Road DT MCC",
+   "destination": "JB01",
+   "type": "XPLE/SWA BS5467",
+   "size": "3c x 70mm2",
+   "voltage": "400V",
+   "band": "B2"
+  },
+  {
+   "ref": "CE25DT10005",
+   "source": "Philips Road DT MCC",
+   "destination": "JB05",
+   "type": "XPLE/SWA BS5467",
+   "size": "1PR x 0.75mm2",
+   "voltage": "24V",
+   "band": "B1"
+  },
+  {
+   "ref": "L25DT10006",
+   "source": "Philips Road DT MCC",
+   "destination": "JB01",
+   "type": "XPLE/SWA BS5467",
+   "size": "3c x 70mm2",
+   "voltage": "400V",
+   "band": "B2"
+  },
+  {
+   "ref": "CE25DT10006",
+   "source": "Philips Road DT MCC",
+   "destination": "JB06",
+   "type": "XPLE/SWA BS5467",
+   "size": "2c x 1.5mm2",
+   "voltage": "24V",
+   "band": "B1"
+  },
+  {
+   "ref": "CE25DT10006-1",
+   "source": "Nrv Position Switch",
+   "destination": "JB06",
+   "type": "VENDOR CABLE",
+   "size": "VENDOR CABLE",
+   "voltage": "24V",
+   "band": "B1"
+  },
+  {
+   "ref": "L25DT10007",
+   "source": "Philips Road DT MCC",
+   "destination": "JB03",
+   "type": "XPLE/SWA BS5467",
+   "size": "3c x 70mm2",
+   "voltage": "400V",
+   "band": "B2"
+  },
+  {
+   "ref": "CE25DT10007",
+   "source": "Philips Road DT MCC",
+   "destination": "JB07",
+   "type": "BS5308 PART1 TYPE1 SWA",
+   "size": "1PR x 0.75mm2",
+   "voltage": "24V",
+   "band": "B1"
+  },
+  {
+   "ref": "CE25DT10007-1",
+   "source": "JB07",
+   "destination": "Return Manhole Level (Radar)",
+   "type": "",
+   "size": "",
+   "voltage": "24V",
+   "band": "B1"
+  },
+  {
+   "ref": "L25DT10008",
+   "source": "Philips Road DT MCC",
+   "destination": "JB03",
+   "type": "XPLE/SWA BS5467",
+   "size": "3c x 70mm2",
+   "voltage": "400V",
+   "band": "B2"
+  },
+  {
+   "ref": "CE25DT10008",
+   "source": "Philips Road DT MCC",
+   "destination": "JB08",
+   "type": "BS5308 PART1 TYPE1 SWA",
+   "size": "1PR x 0.75mm2",
+   "voltage": "24V",
+   "band": "B1"
+  },
+  {
+   "ref": "CE25DT10008-1",
+   "source": "JB08",
+   "destination": "Detention Tank Level 1 (Radar)",
+   "type": "",
+   "size": "",
+   "voltage": "24V",
+   "band": "B1"
+  },
+  {
+   "ref": "L25DT10009",
+   "source": "Philips Road DT MCC",
+   "destination": "JB05",
+   "type": "XPLE/SWA BS5467",
+   "size": "4c x 16mm2",
+   "voltage": "400V",
+   "band": "B2"
+  },
+  {
+   "ref": "CE25DT10009",
+   "source": "Philips Road DT MCC",
+   "destination": "JB09",
+   "type": "BS5308 PART1 TYPE1 SWA",
+   "size": "1PR x 0.75mm2",
+   "voltage": "24V",
+   "band": "B1"
+  },
+  {
+   "ref": "CE25DT10009-1",
+   "source": "JB09",
+   "destination": "Detention Tank Level 2 (Radar)",
+   "type": "",
+   "size": "",
+   "voltage": "24V",
+   "band": "B1"
+  },
+  {
+   "ref": "CE25DT10013",
+   "source": "Philips Road DT MCC",
+   "destination": "Storm Return Pump No.1 Flowmeter",
+   "type": "XLPE/SWA BS5467",
+   "size": "5c x 1.5mm2",
+   "voltage": "24V",
+   "band": "B1"
+  },
+  {
+   "ref": "CE25DT10014",
+   "source": "Philips Road DT MCC",
+   "destination": "Storm Return Pump No.1 Flowmeter",
+   "type": "XLPE/SWA BS5308",
+   "size": "1PR x 0.75mm2",
+   "voltage": "24V",
+   "band": "B1"
+  },
+  {
+   "ref": "CE25DT10015",
+   "source": "Philips Road DT MCC",
+   "destination": "Storm Return Pump No.2 Flowmeter",
+   "type": "XLPE/SWA BS5467",
+   "size": "5c x 1.5mm2",
+   "voltage": "24V",
+   "band": "B1"
+  },
+  {
+   "ref": "CE25DT10015",
+   "source": "Philips Road DT MCC",
+   "destination": "Scavenger Pump Flowmeter",
+   "type": "XLPE/SWA BS5467",
+   "size": "5c x 1.5mm2",
+   "voltage": "24V",
+   "band": "B1"
+  },
+  {
+   "ref": "CE25DT10016",
+   "source": "Philips Road DT MCC",
+   "destination": "Storm Return Pump No.2 Flowmeter",
+   "type": "XLPE/SWA BS5308",
+   "size": "1PR x 0.75mm2",
+   "voltage": "24V",
+   "band": "B1"
+  },
+  {
+   "ref": "CE25DT10016",
+   "source": "Philips Road DT MCC",
+   "destination": "Scavenger Pump Flowmeter",
+   "type": "XLPE/SWA BS5308",
+   "size": "1PR x 0.75mm2",
+   "voltage": "24V",
+   "band": "B1"
+  },
+  {
+   "ref": "CE25DT10017",
+   "source": "Philips Road DT MCC",
+   "destination": "Telemetry Outstation",
+   "type": "XLPE/SWA BS5467",
+   "size": "27c x 1.5mm2",
+   "voltage": "24V",
+   "band": "B1"
+  },
+  {
+   "ref": "CE25DT10018",
+   "source": "Philips Road DT MCC",
+   "destination": "Telemetry Outstation",
+   "type": "PART1 TYPE2 SWA",
+   "size": "4PR x 0.75mm2",
+   "voltage": "24V",
+   "band": "B1"
+  },
+  {
+   "ref": "CE25DT10019",
+   "source": "Philips Road DT MCC",
+   "destination": "Intruder Alarm Door Contact",
+   "type": "3182-Y",
+   "size": "2c x 1.5mm2",
+   "voltage": "24V",
+   "band": "B1"
+  },
+  {
+   "ref": "CE25DT10020",
+   "source": "Philips Road DT MCC",
+   "destination": "Fire Alarm",
+   "type": "3182-Y",
+   "size": "2c x 1.5mm2",
+   "voltage": "24V",
+   "band": "B1"
+  },
+  {
+   "ref": "CE25DT10021",
+   "source": "Philips Road DT MCC",
+   "destination": "Philips Road Vacflush Panel",
+   "type": "XLPE/SWA BS5467",
+   "size": "7c x 1.5mm2",
+   "voltage": "24V",
+   "band": "B1"
+  },
+  {
+   "ref": "L25DT20001",
+   "source": "Building Services Distribution Board",
+   "destination": "Socket",
+   "type": "3183-Y",
+   "size": "3c x 2.5mm2",
+   "voltage": "400V",
+   "band": "B2"
+  },
+  {
+   "ref": "L25DT20002",
+   "source": "Building Services Distribution Board",
+   "destination": "Heater",
+   "type": "3183-Y",
+   "size": "3c x 1.5mm2",
+   "voltage": "400V",
+   "band": "B2"
+  },
+  {
+   "ref": "L25DT20003",
+   "source": "Building Services Distribution Board",
+   "destination": "Extractor Fans",
+   "type": "3183-Y",
+   "size": "3c x 1.5mm2",
+   "voltage": "400V",
+   "band": "B2"
+  },
+  {
+   "ref": "L25DT20004",
+   "source": "Building Services Distribution Board",
+   "destination": "Lights",
+   "type": "3183-Y",
+   "size": "3c x 1.5mm2",
+   "voltage": "400V",
+   "band": "B2"
+  },
+  {
+   "ref": "L25DT20005",
+   "source": "Building Services Distribution Board",
+   "destination": "Fire Alarm",
+   "type": "3183-Y",
+   "size": "3c x 1.5mm2",
+   "voltage": "400V",
+   "band": "B2"
+  },
+  {
+   "ref": "L25DT20006",
+   "source": "Building Services Distribution Board",
+   "destination": "ISO T01",
+   "type": "3183-Y",
+   "size": "3c x 2.5mm2",
+   "voltage": "400V",
+   "band": "B2"
+  },
+  {
+   "ref": "L25DT20006-1",
+   "source": "ISO T01",
+   "destination": "Telemetry Outstation",
+   "type": "XLPE/SWA BS5467",
+   "size": "3c x 2.5mm2",
+   "voltage": "400V",
+   "band": "B2"
+  },
+  {
+   "ref": "L25DT30001",
+   "source": "Valve Actuator Distribution Board",
+   "destination": "P & V Isolation Valve No.1",
+   "type": "XLPE/SWA BS5467",
+   "size": "3c x 1.5mm2",
+   "voltage": "400V",
+   "band": "B2"
+  },
+  {
+   "ref": "CE25DT30001",
+   "source": "Philips Road Vacflush Panel",
+   "destination": "JBV01",
+   "type": "XPLE/SWA BS5467",
+   "size": "6c x 1.5mm2",
+   "voltage": "24V",
+   "band": "B1"
+  },
+  {
+   "ref": "LC25DT30001",
+   "source": "JBV01",
+   "destination": "Vacuum Pump (Duty)",
+   "type": "VENDOR CABLE",
+   "size": "VENDOR CABLE",
+   "voltage": "400V",
+   "band": "B2&B1"
+  },
+  {
+   "ref": "L25DT30002",
+   "source": "Valve Actuator Distribution Board",
+   "destination": "P & V Isolation Valve No.2",
+   "type": "XLPE/SWA BS5467",
+   "size": "3c x 1.5mm2",
+   "voltage": "400V",
+   "band": "B2"
+  },
+  {
+   "ref": "CE25DT30002",
+   "source": "Philips Road Vacflush Panel",
+   "destination": "JBV02",
+   "type": "BS5308 PART1 TYPE1 SWA",
+   "size": "1PR x 0.75mm2",
+   "voltage": "24V",
+   "band": "B1"
+  },
+  {
+   "ref": "CE25DT30002-1",
+   "source": "JBV02",
+   "destination": "Vacflush Float Level Float Switch",
+   "type": "VENDOR CABLE",
+   "size": "VENDOR CABLE",
+   "voltage": "24V",
+   "band": "B1"
+  },
+  {
+   "ref": "L25DT30003",
+   "source": "Valve Actuator Distribution Board",
+   "destination": "P & V Flushing Valve No.3",
+   "type": "XLPE/SWA BS5467",
+   "size": "3c x 1.5mm2",
+   "voltage": "400V",
+   "band": "B2"
+  },
+  {
+   "ref": "CE25DT30003",
+   "source": "Philips Road Vacflush Panel",
+   "destination": "Siemens PIAX1001 Pdp Eng Out",
+   "type": "BS5308 PART1 TYPE1 SWA",
+   "size": "1PR x 0.75mm2",
+   "voltage": "24V",
+   "band": "B1"
+  },
+  {
+   "ref": "L25DT30004",
+   "source": "Philips Road Vacflush Panel",
+   "destination": "JBV01",
+   "type": "XPLE/SWA BS5467",
+   "size": "4c x 2.5mm2",
+   "voltage": "400V",
+   "band": "B2"
+  },
+  {
+   "ref": "CE25DT30004",
+   "source": "Philips Road Vacflush Panel",
+   "destination": "Siemens PIAX1001 Pdp Eng Out",
+   "type": "BS5308 PART1 TYPE1 SWA",
+   "size": "1PR x 0.75mm2",
+   "voltage": "24V",
+   "band": "B1"
+  },
+  {
+   "ref": "CE25DT30005",
+   "source": "Philips Road Vacflush Panel",
+   "destination": "P & V Isolation Valve No.1",
+   "type": "XLPE/SWA BS5467",
+   "size": "7c x 1.5mm2",
+   "voltage": "24V",
+   "band": "B1"
+  },
+  {
+   "ref": "CE25DT30006",
+   "source": "Philips Road Vacflush Panel",
+   "destination": "P & V Isolation Valve No.1",
+   "type": "BS5308 PART1 TYPE2 SWA",
+   "size": "2PR x 0.75mm2",
+   "voltage": "24V",
+   "band": "B1"
+  },
+  {
+   "ref": "CE25DT30007",
+   "source": "Philips Road Vacflush Panel",
+   "destination": "P & V Isolation Valve No.2",
+   "type": "XLPE/SWA BS5467",
+   "size": "7c x 1.5mm2",
+   "voltage": "24V",
+   "band": "B1"
+  },
+  {
+   "ref": "CE25DT30008",
+   "source": "Philips Road Vacflush Panel",
+   "destination": "P & V Isolation Valve No.2",
+   "type": "BS5308 PART1 TYPE2 SWA",
+   "size": "2PR x 0.75mm2",
+   "voltage": "24V",
+   "band": "B1"
+  },
+  {
+   "ref": "CE25DT30009",
+   "source": "Philips Road Vacflush Panel",
+   "destination": "P & V Flushing Valve No.3",
+   "type": "XLPE/SWA BS5467",
+   "size": "7c x 1.5mm2",
+   "voltage": "24V",
+   "band": "B1"
+  },
+  {
+   "ref": "CE25DT30010",
+   "source": "Philips Road Vacflush Panel",
+   "destination": "P & V Flushing Valve No.3",
+   "type": "BS5308 PART1 TYPE2 SWA",
+   "size": "2PR x 0.75mm2",
+   "voltage": "24V",
+   "band": "B1"
+  }
+ ]
+}

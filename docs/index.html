@@ -272,6 +272,7 @@ async function readPage(pdfjs2, page) {
   const ops = await page.getOperatorList();
   const OPS = pdfjs2.OPS;
   const segs = [];
+  const curves = [];
   let ctm = [1, 0, 0, 1, 0, 0];
   const stack = [];
   const tp = (x, y) => {
@@ -290,6 +291,9 @@ async function readPage(pdfjs2, page) {
     else if (fn === OPS.constructPath) {
       const [pops, pargs] = args;
       let k = 0, cur = null, start = null;
+      const curve = (pts, end) => {
+        if (cur) curves.push({ a: cur, b: end, pts });
+      };
       for (const op of pops) {
         if (op === OPS.moveTo) {
           cur = tp(pargs[k], pargs[k + 1]);
@@ -302,10 +306,12 @@ async function readPage(pdfjs2, page) {
           k += 2;
         } else if (op === OPS.curveTo) {
           const p = tp(pargs[k + 4], pargs[k + 5]);
+          curve([tp(pargs[k], pargs[k + 1]), tp(pargs[k + 2], pargs[k + 3])], p);
           cur = p;
           k += 6;
         } else if (op === OPS.curveTo2 || op === OPS.curveTo3) {
           const p = tp(pargs[k + 2], pargs[k + 3]);
+          curve([tp(pargs[k], pargs[k + 1])], p);
           cur = p;
           k += 4;
         } else if (op === OPS.closePath) {
@@ -325,7 +331,73 @@ async function readPage(pdfjs2, page) {
       }
     }
   }
+  segs.push(...wavyLines(curves));
   return { width: viewport.width, height: viewport.height, texts, segs };
+}
+function wavyLines(curves, tol = 1.5) {
+  const out = [], used = /* @__PURE__ */ new Set(), chains = [];
+  const grid = /* @__PURE__ */ new Map();
+  const cell = (p) => `${Math.round(p[0] / 4)}_${Math.round(p[1] / 4)}`;
+  curves.forEach((c, i) => {
+    for (const p of [c.a, c.b]) {
+      const k = cell(p);
+      if (!grid.has(k)) grid.set(k, []);
+      grid.get(k).push(i);
+    }
+  });
+  const touching = (p) => {
+    const [gx, gy] = [Math.round(p[0] / 4), Math.round(p[1] / 4)], res = [];
+    for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (const i of grid.get(`${gx + dx}_${gy + dy}`) || []) if (!used.has(i)) {
+      const c = curves[i];
+      const da = Math.hypot(c.a[0] - p[0], c.a[1] - p[1]), db = Math.hypot(c.b[0] - p[0], c.b[1] - p[1]);
+      if (Math.min(da, db) < tol) res.push([i, da <= db ? c.b : c.a, Math.min(da, db)]);
+    }
+    res.sort((x, y) => x[2] - y[2]);
+    return res.length > 1 && res[1][2] - res[0][2] < 0.05 ? res : res.slice(0, 1);
+  };
+  for (let i = 0; i < curves.length; i++) {
+    if (used.has(i)) continue;
+    used.add(i);
+    const pts = [...curves[i].pts, curves[i].a, curves[i].b];
+    let ends = [curves[i].a, curves[i].b], n = 1;
+    for (const side of [0, 1]) {
+      for (; ; ) {
+        const t = touching(ends[side]);
+        if (t.length !== 1) break;
+        const [j, far] = t[0];
+        used.add(j);
+        n++;
+        pts.push(...curves[j].pts, far);
+        ends[side] = far;
+      }
+    }
+    chains.push({ ends, pts, n });
+  }
+  for (let merged = true; merged; ) {
+    merged = false;
+    for (let i = 0; i < chains.length && !merged; i++) for (let j = i + 1; j < chains.length && !merged; j++) {
+      const A = chains[i], B = chains[j];
+      for (const ai of [0, 1]) for (const bi of [0, 1]) {
+        if (merged) break;
+        const p = A.ends[ai], q = B.ends[bi];
+        if (Math.hypot(p[0] - q[0], p[1] - q[1]) < 2.5) {
+          A.ends = [A.ends[1 - ai], B.ends[1 - bi]];
+          A.pts.push(...B.pts);
+          A.n += B.n;
+          chains.splice(j, 1);
+          merged = true;
+        }
+      }
+    }
+  }
+  for (const { ends, pts, n } of chains) {
+    if (n < 3) continue;
+    const [[ax, ay], [bx, by]] = ends, L = Math.hypot(bx - ax, by - ay);
+    if (L < 40) continue;
+    const dev = Math.max(...pts.map(([x, y]) => Math.abs((bx - ax) * (ay - y) - (ax - x) * (by - ay)) / L));
+    if (dev < Math.max(12, L * 0.12)) out.push({ x1: ax, y1: ay, x2: bx, y2: by, wavy: true });
+  }
+  return out;
 }
 
 // src/rules.js
@@ -405,6 +477,8 @@ function normaliseSize(s) {
   t = t.replace(/mm²/g, "mm2");
   t = t.replace(/\s*x\s*/gi, " x ");
   t = t.replace(/(\d)\s*(c|pr|g)\b/gi, (m, d, u) => d + (u.toLowerCase() === "pr" ? "PR" : u.toLowerCase() === "g" ? "G" : "c"));
+  t = t.replace(/^((?:\d+ x )?\d+(?:c|PR|G)) (?=\d)/, "$1 x ");
+  t = t.replace(/(\d)\s*mm(?![2²])\b/g, "$1mm2");
   if (/\d$/.test(t) && !/mm2$/.test(t)) t += "mm2";
   t = t.replace(/(\d)\s*mm2/, "$1mm2");
   return t;
@@ -428,6 +502,8 @@ var DEFAULT_RULES = {
   direction: "supply-first",
   bandVoltage: BAND_VOLTAGE,
   prefixBand: { L: "B2", LC: "B2", CE: "B1" },
+  // company numbering: L25NA1001 = prefix, year, area code, then this many digits
+  refDigits: 4,
   sortRows
 };
 
@@ -435,11 +511,12 @@ var DEFAULT_RULES = {
 var REF_RE = /^([A-Z]{1,3}\d{2}[A-Z]{2}[0-9X]{3,5}(?:-\d+)?)\s*(?:\(\s*(B\d(?:\s*[&+\/]\s*B\d)?)\s*\))?$/;
 var BAND_RE = /^\(\s*(B\d(?:\s*[&+\/]\s*B\d)?)\s*\)$/;
 var DWG_RE = /\d{6,}-\d{2}-[A-Z]{2,4}-\d{4,6}-[A-Z]{2}-[A-Z]{2}-[A-Z]-\d{4,6}/;
-var NOISE_RE = /^(P|C|E|M|H|TH|SL|VSD|DOL|E\.\s?S\.?|f\d|\d~|NOTE\s*\d+|LIT\d+|[\d.]+\s*kW)$/i;
+var NOISE_RE = /^(P|C|E|M|H|TH|SL|VSD|DOL|E\.\s?S\.?|f\d|\d~|NOTE\s*\d+|LIT\d+|[\d.]+\s*kW|[\dX.]+\s*A\s*FLC|[\dX.]+\s*kW\s+[\dX.]+\s*A\s*FLC)$/i;
 var TAG_RE = /^[A-Z0-9]{2,}(?:-[A-Z0-9]{2,}){3,}$/;
 var dist = (ax, ay, bx, by) => Math.hypot(ax - bx, ay - by);
-var isV = (s) => Math.abs(s.x1 - s.x2) < 0.6;
-var isH = (s) => Math.abs(s.y1 - s.y2) < 0.6;
+var isV = (s) => Math.abs(s.x1 - s.x2) < Math.max(0.6, Math.abs(s.y1 - s.y2) * (s.wavy ? 0.06 : 0.02));
+var isH = (s) => Math.abs(s.y1 - s.y2) < Math.max(0.6, Math.abs(s.x1 - s.x2) * (s.wavy ? 0.06 : 0.02));
+var xAt = (s, y) => s.y2 === s.y1 ? s.x1 : s.x1 + (s.x2 - s.x1) * Math.min(1, Math.max(0, (y - s.y1) / (s.y2 - s.y1)));
 var segLen = (s) => dist(s.x1, s.y1, s.x2, s.y2);
 function ptSegDist(px, py, s) {
   const vx = s.x2 - s.x1, vy = s.y2 - s.y1;
@@ -598,7 +675,7 @@ function parseSpec(raw) {
   if (/SUBCAB/i.test(s)) {
     return { type: "SUBCAB", size: s.trim() };
   }
-  const m = s.match(/((?:\d+\s*[x×]\s*)?\d+\s*(?:c|pr|g)\s*[x×]\s*\d+(?:\.\d+)?\s*(?:mm²|mm2|mm)?)/i);
+  const m = s.match(/((?:\d+\s*[x×]\s*)?\d+\s*(?:c|pr|g)\s*[x×]\s*\d+(?:\.\d+)?\s*(?:mm²|mm2|mm)?)/i) || s.match(/((?:\d+\s*[x×]\s*)?\d+\s*(?:c|pr|g)\s+\d+(?:\.\d+)?\s*(?:mm²|mm2|mm))/i);
   if (m) {
     const type = (s.slice(0, m.index) + " " + s.slice(m.index + m[0].length)).replace(/\s+/g, " ").trim();
     return { type, size: normaliseSize(m[1]) };
@@ -642,7 +719,8 @@ function extractDrawing(geom, fileName = "", rules = DEFAULT_RULES) {
       if (Math.abs(t.angle) === 90 && isV(s)) {
         const y0 = Math.min(s.y1, s.y2), y1 = Math.max(s.y1, s.y2);
         if (y1 < t.y0 - 5 || y0 > t.y1 + 5) continue;
-        d = s.x1 >= t.x1 ? s.x1 - t.x1 : s.x1 <= t.x0 ? t.x0 - s.x1 : 0;
+        const sx = xAt(s, t.cy);
+        d = sx >= t.x1 ? sx - t.x1 : sx <= t.x0 ? t.x0 - sx : 0;
         if (d > sz * 1.6) continue;
       } else if (t.angle === 0 && isH(s)) {
         const x0 = Math.min(s.x1, s.x2), x1 = Math.max(s.x1, s.x2);
@@ -825,6 +903,8 @@ function extractDrawing(geom, fileName = "", rules = DEFAULT_RULES) {
         prevBottom = u.y1;
       }
     }
+    const SPEC_LIKE = /(mm|PR|\dc\b|\dc\s|VENDOR|SUBCAB|XLPE|XPLE|SWA|BS\d|G&Y|-Y|-X|\dG\d|\d{4}X|CAT\d)/i;
+    cand = cand.filter((u, i) => !/^[2²]$/.test(u.str.trim()) && !(u.size < sz * 0.75 && !SPEC_LIKE.test(u.str)) && !cand.slice(0, i).some((v) => v.str === u.str && Math.abs(v.x0 - u.x0) < 1 && Math.abs(v.y0 - u.y0) < 1));
     const out = [];
     for (const u of cand) {
       const mine = boxDist(u.cx, u.cy, t);
@@ -900,6 +980,14 @@ function extractDrawing(geom, fileName = "", rules = DEFAULT_RULES) {
       }
     }
     rec.ends = [nA, nB];
+    const lineKey = [nA.pos, nB.pos].map((p) => p.join(",")).sort().join("|");
+    const twin = resolved.find((o) => o.lineKey === lineKey && o.ref !== rec.ref);
+    rec.lineKey = lineKey;
+    if (twin) {
+      const msg = `Drawing error: two references on the same cable line (${twin.ref} and ${rec.ref}); one of them is probably left over`;
+      rec.flags.push(msg);
+      if (!twin.flags.includes(msg)) twin.flags.push(msg);
+    }
     const why = [];
     if (rec.leader) why.push({ code: "leader", text: "the label is joined to its cable by a leader arrow" });
     for (const [i, n] of rec.ends.entries()) {
@@ -934,12 +1022,15 @@ function extractDrawing(geom, fileName = "", rules = DEFAULT_RULES) {
     page: { width: Math.round(geom.width), height: Math.round(geom.height), area, textCount: texts.length },
     drawing: { ...tb, _titleBlockX: void 0 },
     panel: strip ? { name: strip.name, rawName: strip.rawName } : null,
+    boards: strips.map((st) => st.name).filter(Boolean),
+    // every header strip's board name
     cables: resolved,
     issues
   };
 }
 var RANK = (n) => n.kind === "dno" ? 0 : n.kind === "panel" ? /INCOMER|\bFROM\b/i.test(n.way || "") ? 4 : 0 : n.kind === "offsheet" ? 1 : n.kind === "box" ? 2 : 3;
 function classifyFlag(f) {
+  if (/^Drawing error/i.test(f)) return "conflict";
   if (/differs between drawings|disagree|More than two ends|normally .*drawing says/i.test(f)) return "conflict";
   if (/not uploaded|Incoming supply|No voltage band/i.test(f)) return "missing";
   if (/assumed .* from prefix/i.test(f)) return "note";
@@ -964,22 +1055,74 @@ function mergeDrawings(drawings, rules = DEFAULT_RULES) {
       if (firstWord && noteName.toLowerCase().includes(firstWord)) alias.set(sheetOf(target) + "|" + m.key, noteName);
     }
   }
+  const words = (x) => String(x || "").toUpperCase().replace(/[^A-Z0-9&]+/g, " ").trim().split(" ").filter(Boolean);
+  const GENERIC = /* @__PURE__ */ new Set(["FROM", "TO", "CONTROL", "THE", "NEW"]);
+  const boardNamed = (n, d) => {
+    if (!["device", "box"].includes(n.kind) || !n.name) return null;
+    const w = words(n.name).filter((x) => !GENERIC.has(x));
+    if (w.length < 2) return null;
+    const hits = [];
+    for (const o of drawings) if (o !== d) {
+      for (const b of o.boards || (o.panel ? [o.panel.name] : [])) if (w.every((x) => words(b).includes(x))) hits.push(b);
+    }
+    const uniq = [...new Set(hits.map((h) => h.toUpperCase()))];
+    return uniq.length === 1 ? hits[0] : null;
+  };
   const nameOf = (n, d) => {
     if (n.kind === "offsheet") {
       const target = byClient.get(n.drawing);
       return target && target.panel ? rules.fullName(target.panel.name) : "";
     }
+    const b = boardNamed(n, d);
+    if (b) return rules.fullName(b);
     const a = n.key && alias.get(sheetOf(d) + "|" + n.key);
     return rules.fullName(a || n.name);
   };
-  const groups = /* @__PURE__ */ new Map();
+  const concreteOf = (c, d) => c.ends.filter((n) => n.kind !== "offsheet").map((n) => nameOf(n, d)).filter(Boolean).map((x) => x.toLowerCase());
+  const groups0 = /* @__PURE__ */ new Map();
   for (const x of all) {
-    if (!groups.has(x.c.ref)) groups.set(x.c.ref, []);
-    groups.get(x.c.ref).push(x);
+    if (!groups0.has(x.c.ref)) groups0.set(x.c.ref, []);
+    groups0.get(x.c.ref).push(x);
+  }
+  for (const inst of groups0.values()) for (const x of inst) {
+    const iCol = x.c.ends.findIndex((n) => n.fromColumn);
+    if (iCol < 0) continue;
+    const mine = x.c.ends[1 - iCol];
+    const other = inst.find((y) => y.d !== x.d && y.c.ends.some((n) => n.kind === "panel" && n.name !== mine.name));
+    if (!other) continue;
+    const board = other.c.ends.find((n) => n.kind === "panel" && n.name !== mine.name);
+    x.c = {
+      ...x.c,
+      ends: x.c.ends.map((n, i) => i === iCol ? { kind: "panel", name: board.name, way: "", pos: n.pos } : n),
+      flags: x.c.flags.filter((f) => !/^Nothing drawn at the far end/.test(f))
+    };
+  }
+  const groups = /* @__PURE__ */ new Map();
+  for (const [ref, inst] of groups0) {
+    const clusters = [];
+    for (const x of inst) {
+      const mine = new Set(concreteOf(x.c, x.d));
+      const fit = clusters.find((cl) => {
+        const u = /* @__PURE__ */ new Set([...cl.ends, ...mine]);
+        return u.size <= 2;
+      });
+      if (fit) {
+        fit.inst.push(x);
+        mine.forEach((e) => fit.ends.add(e));
+      } else clusters.push({ inst: [x], ends: mine });
+    }
+    const real = clusters.filter((cl) => cl.ends.size >= 2);
+    if (real.length > 1) {
+      const where = real.map((cl) => [...new Set(cl.inst.map((x) => sheetOf(x.d)))].map((sh) => sh.replace(/^.*-W-/, "W-")).join("+") + ": " + [...cl.ends].map((e) => rules.fullName(e)).join(" \u2013 "));
+      for (const cl of clusters) for (const x of cl.inst) x.dup = `Reference ${ref} is used for ${real.length} different cables on the drawings (${where.join("; ")}). One of them needs a new number.`;
+      clusters.forEach((cl, i) => groups.set(i ? `${ref}#${i}` : ref, cl.inst));
+    } else groups.set(ref, inst);
   }
   const rows = [];
-  for (const [ref, inst] of groups) {
+  for (const [gkey, inst] of groups) {
+    const ref = gkey.replace(/#\d+$/, "");
     const flags = [];
+    if (inst[0].dup) flags.push(inst[0].dup);
     const ends = [];
     const srcVotes = /* @__PURE__ */ new Map();
     const seenSign = /* @__PURE__ */ new Map();
@@ -1068,6 +1211,22 @@ function mergeDrawings(drawings, rules = DEFAULT_RULES) {
     row.flagKinds = row.flags.map(classifyFlag);
     row.doubts = row.views.flatMap((v) => v.uncertain.map((u) => ({ ...u, sheet: v.sheet })));
     row.confidence = row.doubts.length ? "low" : "high";
+  }
+  const REF_PARTS = /^([A-Z]+)(\d{2}[A-Z]{2})(\d+)(?:-\d+)?$/;
+  const areaCount = /* @__PURE__ */ new Map();
+  for (const r of rows) {
+    const m = r.ref.match(REF_PARTS);
+    if (m) areaCount.set(m[2], (areaCount.get(m[2]) || 0) + 1);
+  }
+  const mainArea = [...areaCount].sort((a, b) => b[1] - a[1])[0]?.[0];
+  for (const r of rows) {
+    const m = r.ref.match(REF_PARTS);
+    if (m && rules.refDigits && m[3].length !== rules.refDigits)
+      r.flags.push(`Drawing error: the number in ${r.ref} has ${m[3].length} digits; cable numbers normally have ${rules.refDigits} (e.g. ${m[1]}${m[2]}${"1".padStart(rules.refDigits, "0")})`);
+    if (m && mainArea && m[2] !== mainArea && areaCount.get(m[2]) * 4 < areaCount.get(mainArea))
+      r.flags.push(`Drawing error: ${r.ref} says ${m[2]}, but the other cables in this set say ${mainArea}`);
+    if (/\bXPLE\b/i.test(r.type)) r.flags.push('Drawing error: cable type is spelt "XPLE" on the drawing (normally XLPE); copied as written');
+    r.flagKinds = r.flags.map(classifyFlag);
   }
   rows.sort(rules.sortRows);
   return { rows };
