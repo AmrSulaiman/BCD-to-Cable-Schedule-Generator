@@ -704,8 +704,8 @@ function extractDrawing(geom, fileName = "", rules = DEFAULT_RULES) {
       const inner = dTexts.filter((t) => inside(t.cx, t.cy, r) && !used.has(t)).sort((a, b) => a.cy - b.cy || a.x0 - b.x0);
       const words = inner.map((t) => t.str).filter((w) => !NOISE_RE.test(w) && !TAG_RE.test(w));
       if (!words.length) continue;
-      const area = (r.x1 - r.x0) * (r.y1 - r.y0);
-      if (!boxHit || area > boxHit.area) boxHit = { r, inner, words, area };
+      const area2 = (r.x1 - r.x0) * (r.y1 - r.y0);
+      if (!boxHit || area2 > boxHit.area) boxHit = { r, inner, words, area: area2 };
     }
     if (boxHit) {
       const { r, inner, words } = boxHit;
@@ -853,7 +853,7 @@ function extractDrawing(geom, fileName = "", rules = DEFAULT_RULES) {
     resolved.push(rec);
   }
   const pts = [];
-  if (strip) pts.push([strip.x0, strip.y0], [strip.x1, strip.y1]);
+  for (const st of strips) pts.push([st.x0, st.y0], [st.x1, st.y1]);
   for (const L of labels) pts.push([L.t.x0, L.t.y0], [L.t.x1, L.t.y1]);
   for (const r of resolved) for (const n of r.ends) if (n.pos) pts.push(n.pos);
   for (const b of blocks || []) pts.push([b.x0, b.y0], [b.x1, b.y1]);

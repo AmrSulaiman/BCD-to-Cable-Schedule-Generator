@@ -487,7 +487,7 @@ export function extractDrawing(geom, fileName = '', rules = DEFAULT_RULES) {
 
   // the part of the sheet that holds the diagram (used to aim the AI's close-up images)
   const pts = [];
-  if (strip) pts.push([strip.x0, strip.y0], [strip.x1, strip.y1]);
+  for (const st of strips) pts.push([st.x0, st.y0], [st.x1, st.y1]);
   for (const L of labels) pts.push([L.t.x0, L.t.y0], [L.t.x1, L.t.y1]);
   for (const r of resolved) for (const n of r.ends) if (n.pos) pts.push(n.pos);
   for (const b of blocks || []) pts.push([b.x0, b.y0], [b.x1, b.y1]);
