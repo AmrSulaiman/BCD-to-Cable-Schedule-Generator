@@ -1707,7 +1707,6 @@ async function readFiles(files) {
         if (geom.texts.length < 10) d.warn.push("No text layer: looks like a scanned PDF. Only the AI cross-check can read it.");
         else if (!d.panel) d.warn.push("No board header strip found (REFERENCE / DESCRIPTION rows).");
         if (!d.cables.length && geom.texts.length >= 10) d.warn.push("No cable references found.");
-        if (!d.drawing.clientNumber) d.warn.push("Client drawing number not found, so links from other sheets to this one cannot be resolved.");
         state.drawings = state.drawings.filter((x) => x.file !== d.file && !(d.drawing.wbNumber && x.drawing.wbNumber === d.drawing.wbNumber));
         state.drawings.push(d);
         state.sources.set(d.file, { bytes, page: p, pageText: geom.texts.map((t) => t.str).join(" ") });
@@ -1821,6 +1820,7 @@ async function runAI(retry = false) {
     showAI();
   }
 }
+var usesDrawingNumbers = () => state.drawings.some((d) => d.cables.some((c) => c.ends.some((e) => e.kind === "offsheet" && e.drawing)));
 function render() {
   const dl = $("#drawings");
   dl.innerHTML = state.drawings.length ? state.drawings.map((d, i) => `
@@ -1830,7 +1830,7 @@ function render() {
         <span class="mono">${esc(d.drawing.wbNumber || "\u2014")}</span>
         <span class="mono muted">Client ${esc(d.drawing.clientNumber || "\u2014")} \xB7 Rev ${esc(d.drawing.revision || "\u2014")}</span>
         <span class="muted">${esc(d.panel ? fullName(d.panel.name) : "No panel found")} \xB7 ${d.cables.length} cable label${d.cables.length === 1 ? "" : "s"}</span>
-        ${d.warn.map((w) => `<span class="warn">${esc(w)}</span>`).join("")}
+        ${[...d.warn, ...!d.drawing.clientNumber && usesDrawingNumbers() ? ['Client drawing number not found, so "FROM/TO DRAWING" notes on other sheets cannot be linked to this one.'] : []].map((w) => `<span class="warn">${esc(w)}</span>`).join("")}
       </div>
       <button class="ghost small" data-remove="${i}" aria-label="Remove ${esc(d.file)}">Remove</button>
     </li>`).join("") : '<li class="empty">No drawings yet.</li>';
