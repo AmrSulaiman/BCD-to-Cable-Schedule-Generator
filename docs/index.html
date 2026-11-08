@@ -2344,7 +2344,7 @@ async function runAI(retry = false) {
   aiRun.timer = setInterval(() => status(`${aiRun.last}\u2026 ${clock()}`), 1e3);
   const files = state.drawings.map((d) => d.file).sort().join("|");
   try {
-    const live = geminiProvider({ apiKey: key, onWait: say, isStopped: () => aiRun.stopped, ...anyScanned() ? {} : { timeoutMs: 5e4, budgetMs: 15e4, gapMs: 13e3 }, ...globalThis.BCD_AI_OPTIONS || {} });
+    const live = geminiProvider({ apiKey: key, onWait: say, isStopped: () => aiRun.stopped, ...anyScanned() ? {} : { timeoutMs: 5e4, budgetMs: 15e4 }, ...globalThis.BCD_AI_OPTIONS || {} });
     const prov = retry && state.ai?.files === files ? resumeProvider(state.ai.store, live) : recordingProvider(live);
     const res = await runCheck(prov, say);
     const failed = res.log.filter((l) => /failed|stopped/.test(l)).length;
