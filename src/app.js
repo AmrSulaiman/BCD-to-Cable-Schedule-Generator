@@ -122,6 +122,7 @@ const pageOf = async file => {
 const closeUpSheets = () => state.drawings.map(d => ({
   drawing: d, texts: state.sources.get(d.file)?.texts || [],
   renderRegion: async region => renderRegion(await pageOf(d.file), region, {
+    maxPx: 900,   // the crops are small areas, so text is still large at this size
     makeCanvas: (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; },
     encode: async c => c.toDataURL('image/jpeg', 0.9).split(',')[1],
   }),
@@ -162,7 +163,7 @@ function showAI() {
   const s = state.ai?.summary;
   // before running: say exactly what will be sent
   const plan = !s && state.ruleRows.length && !anyScanned() ? summarisePlan(planChecks(state.ruleRows)) : null;
-  $('#ai-plan').innerHTML = plan ? `The AI will look at close-ups of <b>${plan.ai}</b> unsure reading${plan.ai === 1 ? '' : 's'} and <b>${plan.spot}</b> spot check${plan.spot === 1 ? '' : 's'} (${plan.requests} small request${plan.requests === 1 ? '' : 's'}). <b>${plan.none}</b> clear-cut readings are not sent. <b>${plan.person}</b> row${plan.person === 1 ? ' needs' : 's need'} a person (missing information or drawings that disagree), which the AI cannot settle.`
+  $('#ai-plan').innerHTML = plan ? `The AI will look at close-ups of the <b>${plan.ai}</b> unsure (amber) reading${plan.ai === 1 ? '' : 's'} only (${plan.requests} request${plan.requests === 1 ? '' : 's'}). <b>${plan.none}</b> clear-cut readings are not sent. <b>${plan.person}</b> row${plan.person === 1 ? ' needs' : 's need'} a person (missing information or drawings that disagree), which the AI cannot settle.`
     : !s && anyScanned() ? 'A sheet has no text layer (scanned), so the AI will read the sheets whole. This is slower.' : '';
   const st = state.ai?.stats;
   $('#ai-result').innerHTML = s && state.ai.mode === 'targeted' ? `
@@ -202,7 +203,7 @@ async function runAI(retry = false) {
   try {
     // close-ups are small, so the AI answers quickly: a short time limit per request
     // (Safari also drops requests that get no answer for about a minute)
-    const live = geminiProvider({ apiKey: key, onWait: say, isStopped: () => aiRun.stopped, ...(anyScanned() ? {} : { timeoutMs: 50000, budgetMs: 150000 }), ...(globalThis.BCD_AI_OPTIONS || {}) });
+    const live = geminiProvider({ apiKey: key, onWait: say, isStopped: () => aiRun.stopped, ...(anyScanned() ? {} : { timeoutMs: 50000, budgetMs: 150000, gapMs: 0 }), ...(globalThis.BCD_AI_OPTIONS || {}) });
     const prov = retry && state.ai?.files === files ? resumeProvider(state.ai.store, live) : recordingProvider(live);
     const res = await runCheck(prov, say);
     const failed = res.log.filter(l => /failed|stopped/.test(l)).length;

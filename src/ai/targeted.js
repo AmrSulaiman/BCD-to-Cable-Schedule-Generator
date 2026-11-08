@@ -1,94 +1,75 @@
-// targeted.js — the AI check, aimed only where it is needed.
+// targeted.js — the AI check, only for the rows the rules engine is unsure of.
 //
-// The rules engine already knows, for every cable, how it found each end and how
-// clear-cut that was (engine.js: `uncertain`, `region`). So instead of sending whole
-// sheets to the AI:
+// The rules engine records, for every cable, what it is unsure of (engine.js:
+// `uncertain`) and the area of the sheet around the cable (`region`). So:
 //
-//   1. PLAN     Every row is sorted into one of:
-//                 ai          the reading may be wrong (leader arrow, far-away name, nothing
-//                             at an end, size not found…) → a close-up goes to the AI
-//                 person      the information is missing or the drawings contradict each
-//                             other → no image can settle it, so a person must
-//                 spot        a sure reading picked as a spot check (2 per sheet), to catch
-//                             mistakes the rules engine does not know it made
-//                 not needed  a sure reading → no AI
-//   2. CROP     For each cable to check, only its area of the sheet is rendered: the label,
-//               the traced line, both ends and (for a board end) its header-strip column,
-//               plus a margin. The exact words the PDF prints in that area go with it.
-//   3. ASK      Close-ups are sent in small batches (one sheet, up to 5 cables per request,
-//               a few requests at a time). The AI is not told what the rules engine read.
-//   4. CHECK    The answer is checked by code (right reference, right image, known kinds).
-//               If the line ran off the edge of the close-up, it is asked once more with a
-//               wider area.
-//   5. COMPARE  The AI's reading replaces the rules engine's reading of that cable on that
-//               sheet, goes through the same merge and naming rules, and the two rows are
-//               compared field by field.
-//   6. ESCALATE If a spot check disagrees, the rules engine has a blind spot on that sheet,
-//               so every other sure reading on it is checked too.
+//   1. PLAN     Every row is one of:
+//                 ai          amber because the reading may be wrong (leader arrow, far-away
+//                             name, nothing at an end, size not found…) → close-up to the AI
+//                 person      amber because information is missing or the drawings disagree
+//                             → no picture can settle it, so it is not sent
+//                 none        a clear-cut reading → not sent
+//               For each "ai" row the plan also says WHICH fields are in doubt: the ends,
+//               or the size/type. Only those fields are compared with the AI.
+//   2. CROP     For each cable, only its area of the sheet is rendered, plus the exact words
+//               the PDF prints there.
+//   3. ASK      One request per sheet with all that sheet's close-ups, every sheet at the
+//               same time. The AI is not told what the rules engine read.
+//   4. CHECK    The answer is checked by code: right cable, right image, known kinds of
+//               end. A "name" that is only symbol lettering (M, 3~, E.S, TH, SL…) is
+//               treated as "could not read". If the line ran off the close-up, it is
+//               asked once more with a wider area.
+//   5. COMPARE  The AI's reading goes through the same merge and naming rules, then the
+//               fields in doubt are compared. Other fields keep the rules engine's value.
 //
-// Nothing the AI says is applied silently. Rows it disagrees with stay flagged and show
+// Nothing the AI says is applied silently. Rows it disagrees with stay amber and show
 // both readings for a person to pick.
 
-import { mergeDrawings, classifyFlag } from '../engine.js';
+import { mergeDrawings, classifyFlag, NOISE_RE } from '../engine.js';
 import { DEFAULT_RULES } from '../rules.js';
 import { toSheetScale } from './render.js';
 import { CHECK_VERSION, CHECK_SYSTEM, CHECK_SCHEMA, checkUserText } from './prompt.js';
 import { FIELDS, toCable, fieldText, compareField, clean } from './crosscheck.js';
 
-const BATCH = 8;   // cables per request: fewer requests, as the free tier allows only ~5 a minute and ~20 a day
-const SPOTS_PER_SHEET = 2;
+const MAX_PER_REQUEST = 15;   // close-ups in one request (a sheet with more is split)
 
-// stable pseudo-random order, so the same drawings always get the same spot checks
-const hash = s => { let h = 2166136261; for (const c of s) h = Math.imul(h ^ c.charCodeAt(0), 16777619); return h >>> 0; };
+// which fields each kind of doubt is about
+const FIELDS_FOR = { leader: ['ends'], loose: ['ends'], column: ['ends'], open: ['ends'], spec: ['type', 'size'], 'no-line': ['ends', 'type', 'size', 'band'] };
 
-/** Sort rows into ai / person / spot / none. Returns Map ref -> plan */
-export function planChecks(ruleRows, { spots = SPOTS_PER_SHEET } = {}) {
-  const plans = new Map();
-  for (const r of ruleRows) {
+/** Sort rows into ai / person / none. Returns an array of plans, one per row (same order). */
+export function planChecks(ruleRows) {
+  return ruleRows.map(r => {
     const kinds = r.flagKinds || (r.flags || []).map(classifyFlag);
     const reading = r.flags.filter((f, i) => kinds[i] === 'reading');
     const person = r.flags.filter((f, i) => kinds[i] === 'missing' || kinds[i] === 'conflict');
     const views = r.views || [];
     let jobs = views.filter(v => v.uncertain.length);
-    // a reading flag without a recorded doubt (e.g. from the merge): look at every view
-    if (!jobs.length && reading.length) jobs = views;
+    const fields = new Set(jobs.flatMap(v => v.uncertain.flatMap(u => FIELDS_FOR[u.code] || ['ends'])));
+    // an amber reading flag without a recorded doubt (e.g. from the merge): look at every view
+    if (!jobs.length && reading.length) {
+      jobs = views;
+      if (reading.some(f => /source|destination|line/i.test(f))) fields.add('ends');
+      if (reading.some(f => /size|type/i.test(f))) { fields.add('type'); fields.add('size'); }
+      if (!fields.size) fields.add('ends');
+    }
     jobs = jobs.filter(v => v.region);
     const kind = jobs.length ? 'ai' : person.length ? 'person' : 'none';
-    plans.set(r.ref, {
-      kind, jobs: jobs.map(v => ({ ref: r.ref, sheet: v.sheet, file: v.file, region: v.region, why: v.uncertain.map(u => u.text), openEnd: v.uncertain.some(u => u.code === 'column' || u.code === 'open') })),
-      person, reasons: [...new Set(jobs.flatMap(v => v.uncertain.map(u => u.text)).concat(jobs.length && !jobs.some(v => v.uncertain.length) ? reading : []))],
-    });
-  }
-  // spot checks: per sheet, among sure single-sheet readings
-  const bySheet = new Map();
-  for (const r of ruleRows) {
-    const p = plans.get(r.ref);
-    if (p.kind !== 'none') continue;
-    for (const v of r.views || []) {
-      if (!v.region) continue;
-      if (!bySheet.has(v.file)) bySheet.set(v.file, []);
-      bySheet.get(v.file).push({ r, v });
-    }
-  }
-  for (const [file, list] of bySheet) {
-    list.sort((a, b) => hash(a.r.ref) - hash(b.r.ref));
-    for (const { r, v } of list.filter(x => plans.get(x.r.ref).kind === 'none').slice(0, spots)) {
-      const p = plans.get(r.ref);
-      p.kind = 'spot';
-      p.jobs = [{ ref: r.ref, sheet: v.sheet, file, region: v.region, why: [], spot: true }];
-    }
-  }
-  return plans;
+    return {
+      ref: r.ref, kind, person, fields: [...fields],
+      jobs: jobs.map(v => ({ ref: r.ref, sheet: v.sheet, file: v.file, region: v.region, openEnd: v.uncertain.some(u => u.code === 'column' || u.code === 'open') })),
+      reasons: [...new Set(jobs.flatMap(v => v.uncertain.map(u => u.text)).concat(jobs.length && !jobs.some(v => v.uncertain.length) ? reading : []))],
+    };
+  });
 }
 
 export const summarisePlan = plans => {
-  const c = { ai: 0, person: 0, spot: 0, none: 0, requests: 0 };
+  const c = { ai: 0, person: 0, none: 0, requests: 0 };
   const perFile = new Map();
-  for (const p of plans.values()) {
+  for (const p of plans) {
     c[p.kind]++;
-    for (const j of p.jobs) perFile.set(j.file, (perFile.get(j.file) || 0) + 1);
+    for (const j of p.jobs) if (p.kind === 'ai') perFile.set(j.file, (perFile.get(j.file) || 0) + 1);
   }
-  for (const n of perFile.values()) c.requests += Math.ceil(n / BATCH);
+  for (const n of perFile.values()) c.requests += Math.ceil(n / MAX_PER_REQUEST);
   return c;
 };
 
@@ -97,15 +78,21 @@ const widen = ([x0, y0, x1, y1], W, H) => {
   return [Math.max(0, x0 - w / 2), Math.max(0, y0 - h / 2), Math.min(W, x1 + w / 2), Math.min(H, y1 + h / 2)].map(Math.round);
 };
 
+// "M 3~", "E.S", "TH SL": lettering inside a symbol, not a name
+const symbolOnly = name => {
+  const w = String(name || '').trim().split(/\s+/).filter(Boolean);
+  return !w.length || w.every(x => NOISE_RE.test(x) || /^\d~$/.test(x));
+};
+
 /**
  * sheets: [{ drawing, texts: [{str,x0,y0,x1,y1}], renderRegion: async ([x0,y0,x1,y1]) => { mime, data } }]
  * drawings: the rules engine's drawings (extractDrawing results), ruleRows: mergeDrawings(drawings).rows
  */
-export async function targetedCheck({ sheets, drawings, ruleRows, rules = DEFAULT_RULES, provider, onProgress = () => {}, parallel = 2, spots = SPOTS_PER_SHEET, escalate = true }) {
+export async function targetedCheck({ sheets, drawings, ruleRows, rules = DEFAULT_RULES, provider, onProgress = () => {} }) {
   const t0 = Date.now();
   const log = [];
   const raw = { promptVersion: CHECK_VERSION, check: {} };
-  const plans = planChecks(ruleRows, { spots });
+  const plans = planChecks(ruleRows);
   const sheetOf = new Map(sheets.map(s => [s.drawing.file, s]));
   const failedJobs = new Set();          // `${file}|${ref}`
   const answers = new Map();             // `${file}|${ref}` -> AI cable (toCable) + raw
@@ -124,7 +111,7 @@ export async function targetedCheck({ sheets, drawings, ruleRows, rules = DEFAUL
     const byFile = new Map();
     for (const j of jobs) { if (!byFile.has(j.file)) byFile.set(j.file, []); byFile.get(j.file).push(j); }
     const batches = [];
-    for (const [file, list] of byFile) for (let i = 0; i < list.length; i += BATCH) batches.push({ file, list: list.slice(i, i + BATCH) });
+    for (const [file, list] of byFile) for (let i = 0; i < list.length; i += MAX_PER_REQUEST) batches.push({ file, list: list.slice(i, i + MAX_PER_REQUEST) });
     let done = 0;
     const one = async ({ file, list }, wide = false) => {
       const s = sheetOf.get(file);
@@ -162,7 +149,10 @@ export async function targetedCheck({ sheets, drawings, ruleRows, rules = DEFAUL
           // line ran off the close-up: look once more with a wider area (not when the
           // rules engine already found nothing drawn at that end — wider will not help)
           if (!wide && !j.openEnd && (a.line_leaves_image || unknownEnd)) { retry.push(j); continue; }
-          answers.set(`${file}|${ref}`, { ...toCable({ ...a, ref }), confidence: a.confidence, note: clean(a.note), wide });
+          const cab = toCable({ ...a, ref });
+          // symbol lettering is not a name: treat that end as unread
+          cab.ends = cab.ends.map(e => (['device', 'box'].includes(e.kind) && symbolOnly(e.name) ? { kind: 'unknown', name: '' } : e));
+          answers.set(`${file}|${ref}`, { ...cab, confidence: a.confidence, note: clean(a.note), wide });
         }
         if (retry.length) { log.push(`${file}: looking again with a wider area for ${retry.map(j => j.ref).join(', ')}`); await one({ file, list: retry }, true); }
       } catch (e) {
@@ -177,15 +167,15 @@ export async function targetedCheck({ sheets, drawings, ruleRows, rules = DEFAUL
     };
     onProgress(`${label}: 0 of ${batches.length} request${batches.length === 1 ? '' : 's'} done`);
     const queue = [...batches];
-    await Promise.all(Array.from({ length: Math.min(parallel, queue.length) }, async () => {
+    // every request at once: there are few, and they are small
+    await Promise.all(Array.from({ length: queue.length }, async () => {
       while (queue.length && !stopped && !gaveUp) await one(queue.shift());
     }));
     for (const b of queue) b.list.forEach(j => failedJobs.add(`${b.file}|${j.ref}`)); // left over after Stop
   };
 
   // ---- compare one row: the AI's readings replace the rules engine's on the checked sheets
-  const compareRow = r => {
-    const p = plans.get(r.ref);
+  const compareRow = (r, p) => {
     const got = p.jobs.filter(j => answers.has(`${j.file}|${j.ref}`));
     if (!got.length) return null;
     const swapped = drawings.map(d => {
@@ -207,49 +197,24 @@ export async function targetedCheck({ sheets, drawings, ruleRows, rules = DEFAUL
     });
     const aRow = mergeDrawings(swapped, rules).rows.find(x => x.ref === r.ref);
     if (!aRow) return null;
+    // only the fields in doubt are compared; the rest keep the rules engine's reading
     const fields = {};
-    for (const [f] of FIELDS) fields[f] = { status: compareField(f, r, aRow), rules: fieldText(r, f), ai: fieldText(aRow, f) };
+    for (const [f] of FIELDS) if (p.fields.includes(f)) fields[f] = { status: compareField(f, r, aRow), rules: fieldText(r, f), ai: fieldText(aRow, f) };
     return { aRow, fields, notes: got.map(j => answers.get(`${j.file}|${j.ref}`).note).filter(Boolean) };
   };
 
-  // 1–4. doubtful readings + spot checks, together
-  const first = [...plans.values()].filter(p => p.kind === 'ai' || p.kind === 'spot').flatMap(p => p.jobs);
-  if (first.length) await runJobs(first, 'AI checking the unsure readings');
-
-  // 6. escalate sheets whose spot check disagreed
-  if (escalate && !stopped && !gaveUp) {
-    const bad = new Set();
-    for (const r of ruleRows) {
-      const p = plans.get(r.ref);
-      if (p.kind !== 'spot') continue;
-      const c = compareRow(r);
-      if (c && Object.values(c.fields).some(f => f.status === 'differ')) bad.add(p.jobs[0].file);
-    }
-    if (bad.size) {
-      const more = [];
-      for (const r of ruleRows) {
-        const p = plans.get(r.ref);
-        if (p.kind !== 'none') continue;
-        const vs = (r.views || []).filter(v => bad.has(v.file) && v.region);
-        if (!vs.length) continue;
-        p.kind = 'escalated';
-        p.jobs = vs.map(v => ({ ref: r.ref, sheet: v.sheet, file: v.file, region: v.region, why: [] }));
-        more.push(...p.jobs);
-      }
-      log.push(`A spot check disagreed on ${[...bad].join(', ')}, so every other cable on ${bad.size === 1 ? 'that sheet' : 'those sheets'} was checked too (${more.length}).`);
-      if (more.length) await runJobs(more, 'AI checking the rest of the sheet');
-    }
-  }
+  const jobs = plans.filter(p => p.kind === 'ai').flatMap(p => p.jobs);
+  if (jobs.length) await runJobs(jobs, 'AI checking the unsure readings');
 
   // 5. compare and give every row a status
   const out = [];
-  for (const r of ruleRows) {
-    const p = plans.get(r.ref);
+  for (const [i, r] of ruleRows.entries()) {
+    const p = plans[i];
     const row = { ...r, flags: [...r.flags] };
     const reasons = p.reasons;
     if (p.kind === 'none') { row.check = { status: 'not_needed', plan: 'none' }; out.push(row); continue; }
     if (p.kind === 'person') { row.check = { status: 'person', plan: 'person', why: p.person }; out.push(row); continue; }
-    const c = compareRow(r);
+    const c = compareRow(r, p);
     if (!c) {
       row.check = { status: 'not_checked', plan: p.kind, why: reasons };
       if (p.kind === 'ai') row.flags.push('AI check could not be done for this cable; please check it on the drawing');
@@ -258,6 +223,7 @@ export async function targetedCheck({ sheets, drawings, ruleRows, rules = DEFAUL
     const { aRow, fields, notes } = c;
     for (const [f, label] of FIELDS) {
       const fl = fields[f];
+      if (!fl) continue;
       if (fl.status === 'filled') {
         if (f === 'ends') { row.source = aRow.source; row.destination = aRow.destination; }
         else { row[f] = aRow[f]; if (f === 'band') row.voltage = aRow.voltage; }

@@ -10,7 +10,7 @@ const REF_RE = /^([A-Z]{1,3}\d{2}[A-Z]{2}[0-9X]{3,5}(?:-\d+)?)\s*(?:\(\s*(B\d(?:
 const BAND_RE = /^\(\s*(B\d(?:\s*[&+\/]\s*B\d)?)\s*\)$/;
 export const DWG_RE = /\d{6,}-\d{2}-[A-Z]{2,4}-\d{4,6}-[A-Z]{2}-[A-Z]{2}-[A-Z]-\d{4,6}/;
 // Text that is part of a symbol, not a name
-const NOISE_RE = /^(P|C|E|M|H|TH|SL|VSD|DOL|E\.\s?S\.?|f\d|\d~|NOTE\s*\d+|LIT\d+|[\d.]+\s*kW|[\dX.]+\s*A\s*FLC|[\dX.]+\s*kW\s+[\dX.]+\s*A\s*FLC)$/i;   // FLC = full-load current, incl. placeholders like XXA FLC
+export const NOISE_RE = /^(P|C|E|M|H|TH|SL|VSD|DOL|E\.\s?S\.?|f\d|\d~|NOTE\s*\d+|LIT\d+|[\d.]+\s*kW|[\dX.]+\s*A\s*FLC|[\dX.]+\s*kW\s+[\dX.]+\s*A\s*FLC)$/i;   // FLC = full-load current, incl. placeholders like XXA FLC
 // Asset tag lines printed under equipment names, e.g. 07808-SU1-NA1-BLD01-HT001
 const TAG_RE = /^[A-Z0-9]{2,}(?:-[A-Z0-9]{2,}){3,}$/;
 
@@ -540,6 +540,8 @@ export function extractDrawing(geom, fileName = '', rules = DEFAULT_RULES) {
     }
     if (!rec.size || !rec.type) why.push({ code: 'spec', text: 'the cable size or type text was not found next to the label' });
     rec.uncertain = why;
+    // anything the tool is unsure of is shown (amber), so the AI only ever checks amber rows
+    for (const u of why) if (u.code === 'loose') rec.flags.push(`Check the name at ${u.end === 0 ? 'one end' : 'the other end'}: ${u.text.replace(/^the name at (one|the other) end /, '')}`);
     // close-up area: label + traced line + both ends (+ the board way above, if one end is a board)
     const boxes = [[lb[0] - 50, lb[1] - 50, lb[2] + 50, lb[3] + 50], ...(L.specBoxes || []), ...rec.ends.map(n => n.bbox).filter(Boolean)];
     for (const sg of pathSegs) boxes.push([Math.min(sg.x1, sg.x2), Math.min(sg.y1, sg.y2), Math.max(sg.x1, sg.x2), Math.max(sg.y1, sg.y2)]);
