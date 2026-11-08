@@ -1,0 +1,44 @@
+# Runs on GitHub's servers every time something is committed.
+# 1. Tests every project in test/projects/ against its correct schedule
+#    and shows the scorecard on the run's summary page.
+# 2. Checks docs/index.html (the public web page) was rebuilt after code changes.
+name: Accuracy tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:   # adds a "Run workflow" button on the Actions tab
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get the code
+        uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install libraries
+        run: npm ci
+
+      - name: Test every project against its correct schedule
+        run: npm test
+
+      - name: Keep the detailed results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: accuracy-results
+          path: test/results.md
+
+      - name: Check the web page is up to date with the code
+        run: |
+          npm run build
+          if ! git diff --quiet -- docs/index.html; then
+            echo "::error::docs/index.html is out of date. Run 'npm run build' and commit docs/index.html."
+            exit 1
+          fi

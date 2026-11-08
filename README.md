@@ -86,7 +86,8 @@ PDF ──► pdfread.js ──► engine.js: extractDrawing ──► engine.js
 | `src/app.js`, `src/index.html` | The web page |
 | `build.mjs` | Bundles everything (and the template) into one HTML file, `docs/index.html` |
 | `cli.mjs` | Same engine from the command line, writes JSON |
-| `test/compare.mjs` | Compares output with a known-correct schedule |
+| `test/run-all.mjs` | Runs every test project, compares with its correct schedule, checks against the baseline |
+| `.github/workflows/test.yml` | Runs the tests on GitHub after every commit |
 | `tools/dump-geometry.mjs` | Debug: dumps all text and lines from a PDF |
 
 ### How a cable is traced
@@ -107,23 +108,31 @@ PDF ──► pdfread.js ──► engine.js: extractDrawing ──► engine.js
 
 ---
 
-## Test result (Gaskell Street, 4 BCDs, C01)
+## Accuracy tests
 
-Compared with the hand-made schedule `GASKST-WAB-01-XX-ED-W-60002`:
+Every folder in `test/projects/` is one real project: its BCD PDFs plus the checked, correct cable schedule. `npm test` builds each schedule with the tool and compares it cable by cable with the correct one.
 
-| Check | Match |
-|---|---|
-| Cable refs found | 54 / 54, none extra |
-| Voltage | 54 / 54 |
-| Voltage band | 54 / 54 |
-| Cores & size | 53 / 54 (the hand-made schedule writes the two SUBCAB sizes differently from each other) |
-| Correct pair of ends | 52 / 54 (E25NA0001 points to drawing -00009, which was not supplied; CE25NA1015 is written `CSO LCP` in the hand-made schedule) |
-| Cable type | 49 / 54 (the differences are where the hand-made schedule differs from the drawing text) |
-| Direction | The hand-made schedule uses field → board on the DT sheet and board → field on the others; the tool uses one convention throughout |
+```
+test/projects/
+  gaskell-st/
+    DT.pdf  CSO.pdf  BS.pdf  MDB.pdf      the BCDs
+    correct_schedule.xlsx                  the checked schedule
+    settings.json                          optional: { "direction": "field-first" }
+```
 
-Run it yourself with `npm test`. The four drawings and the hand-made schedule are in `test/`.
+**Runs automatically.** GitHub Actions (`.github/workflows/test.yml`) runs the tests on every commit. The ✅ / ❌ next to each commit shows the result, and the run's page on the **Actions** tab shows the scorecard and every difference.
 
----
+**Catches regressions.** `test/baseline.json` stores the last accepted scores. If a change makes any project score lower, the run fails. After an improvement, `npm run test:update-baseline` accepts the new scores.
+
+**Adding a project:** create `test/projects/<project-name>/`, put in the BCD PDFs and the correct schedule (.xlsx), and commit. The next run reports its scores as *new*. Fix what it shows, then update the baseline.
+
+Current results (Gaskell Street, 4 BCDs, 54 cables):
+
+| Cables found | Right two ends | Right direction | Cable type | Cores & size | Voltage | Band |
+|---|---|---|---|---|---|---|
+| 54/54 | 52/54 | 26/54 | 49/54 | 53/54 | 54/54 | 54/54 |
+
+The remaining differences are mostly in the hand-made schedule, not the tool: it writes direction two different ways (field → board on the DT sheet, board → field on the others), uses a short name (`CSO LCP`) in one place, and has cable types that differ from the drawing text. E25NA0001 points to a drawing that was not in the set.
 
 ## Developing
 
@@ -132,7 +141,7 @@ npm install
 npm run build         # docs/index.html, the public page (libraries from cdnjs)
 npm run build:local   # dist/local-test.html (libraries from node_modules, serve with: python3 -m http.server)
 npm run extract -- drawings/*.pdf   # writes out.json
-npm test              # compare with test/answer_key.xlsx
+npm test              # run every project in test/projects/ and compare with its correct schedule
 ```
 
 To change the template, replace `template/Cable_Schedule_Template.xlsx` (sheet name `Cable Schedule`, headers in row 5, data from row 6) and rebuild, or use **use a different .xlsx** on the page.

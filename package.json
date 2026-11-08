@@ -6,7 +6,8 @@
     "build": "node build.mjs",
     "build:local": "node build.mjs --local",
     "extract": "node cli.mjs out.json",
-    "test": "node cli.mjs test/out.json test/DT.pdf test/CSO.pdf test/BS.pdf test/MDB.pdf > /dev/null && node test/compare.mjs test/answer_key.xlsx test/out.json"
+    "test": "node test/run-all.mjs",
+    "test:update-baseline": "node test/run-all.mjs --update-baseline"
   },
   "dependencies": {
     "exceljs": "^4.4.0",
@@ -16,5 +17,8 @@
   "devDependencies": {
     "esbuild": "^0.24.2"
   },
-  "private": true
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  }
 }
