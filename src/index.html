@@ -189,7 +189,7 @@ button.opt.rec { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--ac
           <label class="inline" for="ai-auto"><input id="ai-auto" type="checkbox" checked> Run the AI check automatically when drawings are added</label>
           <div class="actions"><button id="btn-ai" type="button" disabled>Run AI cross-check</button><button id="btn-ai-stop" class="ghost" type="button" hidden>Stop</button></div>
           <p id="ai-plan" class="muted" style="margin:0;font-size:.8rem"></p>
-          <p class="muted" style="margin:0;font-size:.8rem">Only the unsure readings plus a few spot checks are sent, so it usually takes well under a minute. If a spot check disagrees, the rest of that sheet is checked too. The schedule is ready to use straight away; the AI results are added when they arrive.</p>
+          <p class="muted" style="margin:0;font-size:.8rem">Only the amber readings the AI can help with are sent (one request per sheet, all at once), and only the part in doubt is compared, so it usually takes 10–20 seconds. The schedule is ready to use straight away; the AI results are added when they arrive.</p>
           <div id="ai-result" class="ai-result"></div>
         </div>
       </div>

@@ -10,7 +10,8 @@
 //   - "too many requests" waits as long as Google says (up to 65 s) and tries again
 //   - a used-up free model (daily limit) or a missing model -> switch to the next free model
 //   - each request has an overall budget (default 3 min) across all its retries
-//   - the AI is asked to keep its "thinking" short (much faster for reading drawings);
+//   - the AI is asked to switch its "thinking" off, or keep it short if the model
+//     does not allow off (much faster for reading drawings);
 //     models that do not accept that setting are asked again without it
 //   - the caller can stop at any time (isStopped)
 //   - every failure ends in an AIError with a plain-English message; nothing hangs
@@ -81,7 +82,10 @@ async function toError(res) {
  *          maxWaitMs (longest single wait for a limit), onWait(message)
  */
 export function geminiProvider({ apiKey, model, fetchImpl = (...a) => fetch(...a), timeoutMs = 90000, budgetMs = 180000, gapMs = 4000, maxWaitMs = 65000, onWait = () => {}, isStopped = () => false }) {
-  let models = model ? [model] : null, current = 0, lastCall = 0, thinkingOk = true;
+  let models = model ? [model] : null, current = 0, lastCall = 0;
+  // as little 'thinking' as the model allows: off ('minimal'), else 'low', else its default
+  const LEVELS = ['minimal', 'low', null];
+  let level = 0;
   const stopCheck = () => { if (isStopped()) throw new AIError('Stopped.', { stopped: true }); };
   return {
     name: 'Google Gemini',
@@ -101,14 +105,14 @@ export function geminiProvider({ apiKey, model, fetchImpl = (...a) => fetch(...a
         contents: [{ role: 'user', parts }],
         generationConfig: {
           temperature: 0, responseMimeType: 'application/json', responseSchema: schema,
-          ...(thinkingOk ? { thinkingConfig: { thinkingLevel: 'low' } } : {}),
+          ...(LEVELS[level] ? { thinkingConfig: { thinkingLevel: LEVELS[level] } } : {}),
         },
       });
       const deadline = Date.now() + budgetMs;
       const left = () => deadline - Date.now();
       // wait in small steps so Stop works during waits
       const pause = async ms => { const end = Date.now() + Math.min(ms, Math.max(0, left())); while (Date.now() < end) { stopCheck(); await sleep(Math.min(500, end - Date.now())); } };
-      let lastErr, timeouts = 0, netErrs = 0, sentThinking = thinkingOk;
+      let lastErr, timeouts = 0, netErrs = 0, sentLevel = level;
       for (let attempt = 0; attempt < 6; attempt++) {
         stopCheck();
         if (left() < 5000) break;
@@ -118,7 +122,7 @@ export function geminiProvider({ apiKey, model, fetchImpl = (...a) => fetch(...a
         const m = models[current];
         let res;
         try {
-          sentThinking = thinkingOk;
+          sentLevel = level;
           res = await timedFetch(fetchImpl, `${BASE}/models/${m}:generateContent`, {
             method: 'POST', headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey }, body: makeBody(),
           }, Math.min(timeoutMs, left()), isStopped);
@@ -133,7 +137,7 @@ export function geminiProvider({ apiKey, model, fetchImpl = (...a) => fetch(...a
         if (!res.ok) {
           lastErr = await toError(res);
           // this model does not accept the "short thinking" setting: ask again without it
-          if (lastErr.status === 400 && sentThinking && /think/i.test(lastErr.message)) { thinkingOk = false; continue; }
+          if (lastErr.status === 400 && LEVELS[sentLevel] && /think/i.test(lastErr.message)) { if (level === sentLevel) level++; continue; }
           if (lastErr.quota && current < models.length - 1) {
             current++;
             onWait(`${lastErr.message} Switching to ${models[current]}…`);

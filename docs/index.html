@@ -189,7 +189,7 @@ button.opt.rec { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--ac
           <label class="inline" for="ai-auto"><input id="ai-auto" type="checkbox" checked> Run the AI check automatically when drawings are added</label>
           <div class="actions"><button id="btn-ai" type="button" disabled>Run AI cross-check</button><button id="btn-ai-stop" class="ghost" type="button" hidden>Stop</button></div>
           <p id="ai-plan" class="muted" style="margin:0;font-size:.8rem"></p>
-          <p class="muted" style="margin:0;font-size:.8rem">Only the unsure readings plus a few spot checks are sent, so it usually takes well under a minute. If a spot check disagrees, the rest of that sheet is checked too. The schedule is ready to use straight away; the AI results are added when they arrive.</p>
+          <p class="muted" style="margin:0;font-size:.8rem">Only the amber readings the AI can help with are sent (one request per sheet, all at once), and only the part in doubt is compared, so it usually takes 10–20 seconds. The schedule is ready to use straight away; the AI results are added when they arrive.</p>
           <div id="ai-result" class="ai-result"></div>
         </div>
       </div>
@@ -1000,6 +1000,7 @@ function extractDrawing(geom, fileName = "", rules = DEFAULT_RULES) {
     }
     if (!rec.size || !rec.type) why.push({ code: "spec", text: "the cable size or type text was not found next to the label" });
     rec.uncertain = why;
+    for (const u of why) if (u.code === "loose") rec.flags.push(`Check the name at ${u.end === 0 ? "one end" : "the other end"}: ${u.text.replace(/^the name at (one|the other) end /, "")}`);
     const boxes = [[lb[0] - 50, lb[1] - 50, lb[2] + 50, lb[3] + 50], ...L.specBoxes || [], ...rec.ends.map((n) => n.bbox).filter(Boolean)];
     for (const sg of pathSegs) boxes.push([Math.min(sg.x1, sg.x2), Math.min(sg.y1, sg.y2), Math.max(sg.x1, sg.x2), Math.max(sg.y1, sg.y2)]);
     rec.region = regionFor(boxes, rec.ends.map((n) => n.pos).filter(Boolean));
@@ -1394,7 +1395,9 @@ async function toError(res) {
 }
 function geminiProvider({ apiKey, model, fetchImpl = (...a) => fetch(...a), timeoutMs = 9e4, budgetMs = 18e4, gapMs = 4e3, maxWaitMs = 65e3, onWait = () => {
 }, isStopped = () => false }) {
-  let models = model ? [model] : null, current = 0, lastCall = 0, thinkingOk = true;
+  let models = model ? [model] : null, current = 0, lastCall = 0;
+  const LEVELS = ["minimal", "low", null];
+  let level = 0;
   const stopCheck = () => {
     if (isStopped()) throw new AIError("Stopped.", { stopped: true });
   };
@@ -1418,7 +1421,7 @@ function geminiProvider({ apiKey, model, fetchImpl = (...a) => fetch(...a), time
           temperature: 0,
           responseMimeType: "application/json",
           responseSchema: schema,
-          ...thinkingOk ? { thinkingConfig: { thinkingLevel: "low" } } : {}
+          ...LEVELS[level] ? { thinkingConfig: { thinkingLevel: LEVELS[level] } } : {}
         }
       });
       const deadline = Date.now() + budgetMs;
@@ -1430,7 +1433,7 @@ function geminiProvider({ apiKey, model, fetchImpl = (...a) => fetch(...a), time
           await sleep(Math.min(500, end - Date.now()));
         }
       };
-      let lastErr, timeouts = 0, netErrs = 0, sentThinking = thinkingOk;
+      let lastErr, timeouts = 0, netErrs = 0, sentLevel = level;
       for (let attempt = 0; attempt < 6; attempt++) {
         stopCheck();
         if (left() < 5e3) break;
@@ -1440,7 +1443,7 @@ function geminiProvider({ apiKey, model, fetchImpl = (...a) => fetch(...a), time
         const m = models[current];
         let res;
         try {
-          sentThinking = thinkingOk;
+          sentLevel = level;
           res = await timedFetch(fetchImpl, `${BASE}/models/${m}:generateContent`, {
             method: "POST",
             headers: { "content-type": "application/json", "x-goog-api-key": apiKey },
@@ -1457,8 +1460,8 @@ function geminiProvider({ apiKey, model, fetchImpl = (...a) => fetch(...a), time
         }
         if (!res.ok) {
           lastErr = await toError(res);
-          if (lastErr.status === 400 && sentThinking && /think/i.test(lastErr.message)) {
-            thinkingOk = false;
+          if (lastErr.status === 400 && LEVELS[sentLevel] && /think/i.test(lastErr.message)) {
+            if (level === sentLevel) level++;
             continue;
           }
           if (lastErr.quota && current < models.length - 1) {
@@ -2001,71 +2004,61 @@ function replayProvider(store2, name = "Saved AI answers") {
 }
 
 // src/ai/targeted.js
-var BATCH = 8;
-var SPOTS_PER_SHEET = 2;
-var hash = (s) => {
-  let h = 2166136261;
-  for (const c of s) h = Math.imul(h ^ c.charCodeAt(0), 16777619);
-  return h >>> 0;
-};
-function planChecks(ruleRows, { spots = SPOTS_PER_SHEET } = {}) {
-  const plans = /* @__PURE__ */ new Map();
-  for (const r of ruleRows) {
+var MAX_PER_REQUEST = 15;
+var FIELDS_FOR = { leader: ["ends"], loose: ["ends"], column: ["ends"], open: ["ends"], spec: ["type", "size"], "no-line": ["ends", "type", "size", "band"] };
+function planChecks(ruleRows) {
+  return ruleRows.map((r) => {
     const kinds = r.flagKinds || (r.flags || []).map(classifyFlag);
     const reading = r.flags.filter((f, i) => kinds[i] === "reading");
     const person = r.flags.filter((f, i) => kinds[i] === "missing" || kinds[i] === "conflict");
     const views = r.views || [];
     let jobs = views.filter((v) => v.uncertain.length);
-    if (!jobs.length && reading.length) jobs = views;
+    const fields = new Set(jobs.flatMap((v) => v.uncertain.flatMap((u) => FIELDS_FOR[u.code] || ["ends"])));
+    if (!jobs.length && reading.length) {
+      jobs = views;
+      if (reading.some((f) => /source|destination|line/i.test(f))) fields.add("ends");
+      if (reading.some((f) => /size|type/i.test(f))) {
+        fields.add("type");
+        fields.add("size");
+      }
+      if (!fields.size) fields.add("ends");
+    }
     jobs = jobs.filter((v) => v.region);
     const kind = jobs.length ? "ai" : person.length ? "person" : "none";
-    plans.set(r.ref, {
+    return {
+      ref: r.ref,
       kind,
-      jobs: jobs.map((v) => ({ ref: r.ref, sheet: v.sheet, file: v.file, region: v.region, why: v.uncertain.map((u) => u.text), openEnd: v.uncertain.some((u) => u.code === "column" || u.code === "open") })),
       person,
+      fields: [...fields],
+      jobs: jobs.map((v) => ({ ref: r.ref, sheet: v.sheet, file: v.file, region: v.region, openEnd: v.uncertain.some((u) => u.code === "column" || u.code === "open") })),
       reasons: [...new Set(jobs.flatMap((v) => v.uncertain.map((u) => u.text)).concat(jobs.length && !jobs.some((v) => v.uncertain.length) ? reading : []))]
-    });
-  }
-  const bySheet = /* @__PURE__ */ new Map();
-  for (const r of ruleRows) {
-    const p = plans.get(r.ref);
-    if (p.kind !== "none") continue;
-    for (const v of r.views || []) {
-      if (!v.region) continue;
-      if (!bySheet.has(v.file)) bySheet.set(v.file, []);
-      bySheet.get(v.file).push({ r, v });
-    }
-  }
-  for (const [file, list] of bySheet) {
-    list.sort((a, b) => hash(a.r.ref) - hash(b.r.ref));
-    for (const { r, v } of list.filter((x) => plans.get(x.r.ref).kind === "none").slice(0, spots)) {
-      const p = plans.get(r.ref);
-      p.kind = "spot";
-      p.jobs = [{ ref: r.ref, sheet: v.sheet, file, region: v.region, why: [], spot: true }];
-    }
-  }
-  return plans;
+    };
+  });
 }
 var summarisePlan = (plans) => {
-  const c = { ai: 0, person: 0, spot: 0, none: 0, requests: 0 };
+  const c = { ai: 0, person: 0, none: 0, requests: 0 };
   const perFile = /* @__PURE__ */ new Map();
-  for (const p of plans.values()) {
+  for (const p of plans) {
     c[p.kind]++;
-    for (const j of p.jobs) perFile.set(j.file, (perFile.get(j.file) || 0) + 1);
+    for (const j of p.jobs) if (p.kind === "ai") perFile.set(j.file, (perFile.get(j.file) || 0) + 1);
   }
-  for (const n of perFile.values()) c.requests += Math.ceil(n / BATCH);
+  for (const n of perFile.values()) c.requests += Math.ceil(n / MAX_PER_REQUEST);
   return c;
 };
 var widen = ([x0, y0, x1, y1], W, H) => {
   const w = x1 - x0, h = y1 - y0;
   return [Math.max(0, x0 - w / 2), Math.max(0, y0 - h / 2), Math.min(W, x1 + w / 2), Math.min(H, y1 + h / 2)].map(Math.round);
 };
+var symbolOnly = (name) => {
+  const w = String(name || "").trim().split(/\s+/).filter(Boolean);
+  return !w.length || w.every((x) => NOISE_RE.test(x) || /^\d~$/.test(x));
+};
 async function targetedCheck({ sheets, drawings, ruleRows, rules = DEFAULT_RULES, provider, onProgress = () => {
-}, parallel = 2, spots = SPOTS_PER_SHEET, escalate = true }) {
+} }) {
   const t0 = Date.now();
   const log = [];
   const raw = { promptVersion: CHECK_VERSION, check: {} };
-  const plans = planChecks(ruleRows, { spots });
+  const plans = planChecks(ruleRows);
   const sheetOf = new Map(sheets.map((s) => [s.drawing.file, s]));
   const failedJobs = /* @__PURE__ */ new Set();
   const answers = /* @__PURE__ */ new Map();
@@ -2078,14 +2071,14 @@ async function targetedCheck({ sheets, drawings, ruleRows, rules = DEFAULT_RULES
     }
     return out2.slice(0, 120);
   };
-  const runJobs = async (jobs, label) => {
+  const runJobs = async (jobs2, label) => {
     const byFile = /* @__PURE__ */ new Map();
-    for (const j of jobs) {
+    for (const j of jobs2) {
       if (!byFile.has(j.file)) byFile.set(j.file, []);
       byFile.get(j.file).push(j);
     }
     const batches = [];
-    for (const [file, list] of byFile) for (let i = 0; i < list.length; i += BATCH) batches.push({ file, list: list.slice(i, i + BATCH) });
+    for (const [file, list] of byFile) for (let i = 0; i < list.length; i += MAX_PER_REQUEST) batches.push({ file, list: list.slice(i, i + MAX_PER_REQUEST) });
     let done = 0;
     const one = async ({ file, list }, wide = false) => {
       const s = sheetOf.get(file);
@@ -2133,7 +2126,9 @@ async function targetedCheck({ sheets, drawings, ruleRows, rules = DEFAULT_RULES
             retry.push(j);
             continue;
           }
-          answers.set(`${file}|${ref}`, { ...toCable({ ...a, ref }), confidence: a.confidence, note: clean(a.note), wide });
+          const cab = toCable({ ...a, ref });
+          cab.ends = cab.ends.map((e) => ["device", "box"].includes(e.kind) && symbolOnly(e.name) ? { kind: "unknown", name: "" } : e);
+          answers.set(`${file}|${ref}`, { ...cab, confidence: a.confidence, note: clean(a.note), wide });
         }
         if (retry.length) {
           log.push(`${file}: looking again with a wider area for ${retry.map((j) => j.ref).join(", ")}`);
@@ -2155,13 +2150,12 @@ async function targetedCheck({ sheets, drawings, ruleRows, rules = DEFAULT_RULES
     };
     onProgress(`${label}: 0 of ${batches.length} request${batches.length === 1 ? "" : "s"} done`);
     const queue = [...batches];
-    await Promise.all(Array.from({ length: Math.min(parallel, queue.length) }, async () => {
+    await Promise.all(Array.from({ length: queue.length }, async () => {
       while (queue.length && !stopped && !gaveUp) await one(queue.shift());
     }));
     for (const b of queue) b.list.forEach((j) => failedJobs.add(`${b.file}|${j.ref}`));
   };
-  const compareRow = (r) => {
-    const p = plans.get(r.ref);
+  const compareRow = (r, p) => {
     const got = p.jobs.filter((j) => answers.has(`${j.file}|${j.ref}`));
     if (!got.length) return null;
     const swapped = drawings.map((d) => {
@@ -2181,37 +2175,14 @@ async function targetedCheck({ sheets, drawings, ruleRows, rules = DEFAULT_RULES
     const aRow = mergeDrawings(swapped, rules).rows.find((x) => x.ref === r.ref);
     if (!aRow) return null;
     const fields = {};
-    for (const [f] of FIELDS) fields[f] = { status: compareField(f, r, aRow), rules: fieldText(r, f), ai: fieldText(aRow, f) };
+    for (const [f] of FIELDS) if (p.fields.includes(f)) fields[f] = { status: compareField(f, r, aRow), rules: fieldText(r, f), ai: fieldText(aRow, f) };
     return { aRow, fields, notes: got.map((j) => answers.get(`${j.file}|${j.ref}`).note).filter(Boolean) };
   };
-  const first = [...plans.values()].filter((p) => p.kind === "ai" || p.kind === "spot").flatMap((p) => p.jobs);
-  if (first.length) await runJobs(first, "AI checking the unsure readings");
-  if (escalate && !stopped && !gaveUp) {
-    const bad = /* @__PURE__ */ new Set();
-    for (const r of ruleRows) {
-      const p = plans.get(r.ref);
-      if (p.kind !== "spot") continue;
-      const c = compareRow(r);
-      if (c && Object.values(c.fields).some((f) => f.status === "differ")) bad.add(p.jobs[0].file);
-    }
-    if (bad.size) {
-      const more = [];
-      for (const r of ruleRows) {
-        const p = plans.get(r.ref);
-        if (p.kind !== "none") continue;
-        const vs = (r.views || []).filter((v) => bad.has(v.file) && v.region);
-        if (!vs.length) continue;
-        p.kind = "escalated";
-        p.jobs = vs.map((v) => ({ ref: r.ref, sheet: v.sheet, file: v.file, region: v.region, why: [] }));
-        more.push(...p.jobs);
-      }
-      log.push(`A spot check disagreed on ${[...bad].join(", ")}, so every other cable on ${bad.size === 1 ? "that sheet" : "those sheets"} was checked too (${more.length}).`);
-      if (more.length) await runJobs(more, "AI checking the rest of the sheet");
-    }
-  }
+  const jobs = plans.filter((p) => p.kind === "ai").flatMap((p) => p.jobs);
+  if (jobs.length) await runJobs(jobs, "AI checking the unsure readings");
   const out = [];
-  for (const r of ruleRows) {
-    const p = plans.get(r.ref);
+  for (const [i, r] of ruleRows.entries()) {
+    const p = plans[i];
     const row = { ...r, flags: [...r.flags] };
     const reasons = p.reasons;
     if (p.kind === "none") {
@@ -2224,7 +2195,7 @@ async function targetedCheck({ sheets, drawings, ruleRows, rules = DEFAULT_RULES
       out.push(row);
       continue;
     }
-    const c = compareRow(r);
+    const c = compareRow(r, p);
     if (!c) {
       row.check = { status: "not_checked", plan: p.kind, why: reasons };
       if (p.kind === "ai") row.flags.push("AI check could not be done for this cable; please check it on the drawing");
@@ -2234,6 +2205,7 @@ async function targetedCheck({ sheets, drawings, ruleRows, rules = DEFAULT_RULES
     const { aRow, fields, notes } = c;
     for (const [f, label] of FIELDS) {
       const fl = fields[f];
+      if (!fl) continue;
       if (fl.status === "filled") {
         if (f === "ends") {
           row.source = aRow.source;
@@ -2418,6 +2390,8 @@ var closeUpSheets = () => state.drawings.map((d) => ({
   drawing: d,
   texts: state.sources.get(d.file)?.texts || [],
   renderRegion: async (region) => renderRegion(await pageOf(d.file), region, {
+    maxPx: 900,
+    // the crops are small areas, so text is still large at this size
     makeCanvas: (w, h) => {
       const c = document.createElement("canvas");
       c.width = w;
@@ -2457,7 +2431,7 @@ function showAI() {
   btn.disabled = !on || !state.drawings.length || !$("#ai-key").value.trim();
   const s = state.ai?.summary;
   const plan = !s && state.ruleRows.length && !anyScanned() ? summarisePlan(planChecks(state.ruleRows)) : null;
-  $("#ai-plan").innerHTML = plan ? `The AI will look at close-ups of <b>${plan.ai}</b> unsure reading${plan.ai === 1 ? "" : "s"} and <b>${plan.spot}</b> spot check${plan.spot === 1 ? "" : "s"} (${plan.requests} small request${plan.requests === 1 ? "" : "s"}). <b>${plan.none}</b> clear-cut readings are not sent. <b>${plan.person}</b> row${plan.person === 1 ? " needs" : "s need"} a person (missing information or drawings that disagree), which the AI cannot settle.` : !s && anyScanned() ? "A sheet has no text layer (scanned), so the AI will read the sheets whole. This is slower." : "";
+  $("#ai-plan").innerHTML = plan ? `The AI will look at close-ups of the <b>${plan.ai}</b> unsure (amber) reading${plan.ai === 1 ? "" : "s"} only (${plan.requests} request${plan.requests === 1 ? "" : "s"}). <b>${plan.none}</b> clear-cut readings are not sent. <b>${plan.person}</b> row${plan.person === 1 ? " needs" : "s need"} a person (missing information or drawings that disagree), which the AI cannot settle.` : !s && anyScanned() ? "A sheet has no text layer (scanned), so the AI will read the sheets whole. This is slower." : "";
   const st = state.ai?.stats;
   $("#ai-result").innerHTML = s && state.ai.mode === "targeted" ? `
     <span><b class="ok">${s.confirmed}</b> confirmed</span>
@@ -2503,7 +2477,7 @@ async function runAI(retry = false) {
   aiRun.timer = setInterval(() => status(`${aiRun.last}\u2026 ${clock()}`), 1e3);
   const files = state.drawings.map((d) => d.file).sort().join("|");
   try {
-    const live = geminiProvider({ apiKey: key, onWait: say, isStopped: () => aiRun.stopped, ...anyScanned() ? {} : { timeoutMs: 5e4, budgetMs: 15e4 }, ...globalThis.BCD_AI_OPTIONS || {} });
+    const live = geminiProvider({ apiKey: key, onWait: say, isStopped: () => aiRun.stopped, ...anyScanned() ? {} : { timeoutMs: 5e4, budgetMs: 15e4, gapMs: 0 }, ...globalThis.BCD_AI_OPTIONS || {} });
     const prov = retry && state.ai?.files === files ? resumeProvider(state.ai.store, live) : recordingProvider(live);
     const res = await runCheck(prov, say);
     const failed = res.log.filter((l) => /failed|stopped/.test(l)).length;

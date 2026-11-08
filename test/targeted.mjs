@@ -59,16 +59,16 @@ const test = async (name, fn) => { try { await fn(); console.log(`ok   ${name}`)
 for (const project of ['gaskell-st', 'knutsford-dt']) {
   const P = await load(project);
   const plan = summarisePlan(planChecks(P.rows));
-  console.log(`\n## ${project}: ${P.rows.length} rows — ${plan.ai} unsure (to AI), ${plan.spot} spot checks, ${plan.person} need a person, ${plan.none} sure; ${plan.requests} requests`);
+  console.log(`\n## ${project}: ${P.rows.length} rows — ${plan.ai} unsure (to AI), ${plan.person} need a person, ${plan.none} sure; ${plan.requests} requests`);
 
   await test('a fully agreeing AI confirms every checked row and changes nothing', async () => {
     const ai = fakeAI(echo(P.drawings));
     const res = await targetedCheck({ sheets: P.sheets, drawings: P.drawings, ruleRows: P.rows, provider: ai });
     assert.strictEqual(res.summary.disputed, 0, JSON.stringify(res.rows.filter(r => r.check.status === 'disputed').map(r => [r.ref, r.check.fields])));
     for (const r of res.rows) { const o = P.rows.find(x => x.ref === r.ref); assert.deepStrictEqual([r.source, r.destination, r.type, r.size], [o.source, o.destination, o.type, o.size], r.ref); }
-    assert.strictEqual(res.summary.confirmed + res.summary.unconfirmed, plan.ai + plan.spot);
+    assert.strictEqual(res.summary.confirmed + res.summary.unconfirmed, plan.ai);
     assert.ok(ai.calls.length <= plan.requests + 2, `${ai.calls.length} requests`);
-    assert.ok(ai.calls.every(c => c.n <= 8));
+    
     console.log(`     ${ai.calls.length} requests, ${res.summary.confirmed} confirmed, ${res.summary.notNeeded} not needed, ${res.summary.person} for a person`);
   });
 
@@ -78,7 +78,7 @@ for (const project of ['gaskell-st', 'knutsford-dt']) {
     assert.ok(ai.calls.length <= 3, `kept trying after the AI failed: ${ai.calls.length} requests`);
     assert.strictEqual(res.rows.length, P.rows.length);
     for (const r of res.rows) { const o = P.rows.find(x => x.ref === r.ref); assert.strictEqual(r.source, o.source); assert.strictEqual(r.destination, o.destination); }
-    assert.strictEqual(res.summary.notChecked, plan.ai + plan.spot);
+    assert.strictEqual(res.summary.notChecked, plan.ai);
   });
 
   await test('garbage answers are ignored, not applied', async () => {
@@ -87,19 +87,40 @@ for (const project of ['gaskell-st', 'knutsford-dt']) {
     assert.strictEqual(res.summary.disputed, 0);
   });
 
-  await test('a spot check that disagrees makes the rest of that sheet get checked', async () => {
+  await test('only amber rows the AI can help with are sent; one request per sheet', async () => {
     const plans = planChecks(P.rows);
-    const spot = [...plans.values()].find(p => p.kind === 'spot');
+    const ai = fakeAI(echo(P.drawings));
+    await targetedCheck({ sheets: P.sheets, drawings: P.drawings, ruleRows: P.rows, provider: ai });
+    const sent = ai.calls.flatMap(c => c.tag.split(':')[2].split(','));
+    const allowed = new Set(plans.filter(p => p.kind === 'ai').map(p => p.ref));
+    for (const ref of sent) assert.ok(allowed.has(ref), `${ref} was sent but is not an unsure reading`);
+    for (const ref of allowed) assert.ok(sent.includes(ref), `${ref} is unsure but was not sent`);
+    const files = ai.calls.map(c => c.tag.split(':')[1]);
+    assert.strictEqual(new Set(files).size, files.length, 'more than one request for a sheet');
+    for (const [i, r] of P.rows.entries()) if (!r.flags.length) assert.notStrictEqual(plans[i].kind, 'ai', `${r.ref} has no flags but is planned for the AI`);
+  });
+
+  await test('the AI copying a neighbouring cable\'s size/type does not dispute a clearly read spec', async () => {
+    const plans = planChecks(P.rows);
+    const endsOnly = plans.find(p => p.kind === 'ai' && !p.fields.includes('type'));
+    assert.ok(endsOnly, 'no ends-only doubt in this project');
     const base = echo(P.drawings);
-    const ai = fakeAI((ref, file) => ref === spot.jobs[0].ref ? { ...base(ref, file), end_b: { kind: 'equipment', name: 'SOMETHING ELSE' } } : base(ref, file));
+    const ai = fakeAI((ref, file) => ref === endsOnly.ref ? { ...base(ref, file), cable_type: 'XLPE/SWA BS5467', cores_size: '7c x 4mm²' } : base(ref, file));
     const res = await targetedCheck({ sheets: P.sheets, drawings: P.drawings, ruleRows: P.rows, provider: ai });
-    const row = res.rows.find(r => r.ref === spot.jobs[0].ref);
-    assert.strictEqual(row.check.status, 'disputed');
-    assert.strictEqual(row.source + row.destination, P.rows.find(r => r.ref === row.ref).source + P.rows.find(r => r.ref === row.ref).destination, 'disputed value must not be applied');
-    const onSheet = P.rows.filter(r => r.views.some(v => v.file === spot.jobs[0].file) && plans.get(r.ref).kind === 'none').length;
-    const esc = res.rows.filter(r => r.check.plan === 'escalated').length;
-    assert.ok(esc > 0 && esc === onSheet, `escalated ${esc}, expected ${onSheet}`);
-    console.log(`     disagreement on ${spot.jobs[0].file} → ${esc} more cables checked`);
+    const row = res.rows.find(r => r.ref === endsOnly.ref), orig = P.rows.find(r => r.ref === endsOnly.ref);
+    assert.strictEqual(row.check.status, 'confirmed', JSON.stringify(row.check.fields));
+    assert.strictEqual(row.type, orig.type); assert.strictEqual(row.size, orig.size);
+  });
+
+  await test('symbol lettering ("M 3~") is never filled in as a name', async () => {
+    const plans = planChecks(P.rows);
+    const target = plans.find(p => p.kind === 'ai' && p.fields.includes('ends'));
+    const base = echo(P.drawings);
+    const ai = fakeAI((ref, file) => ref === target.ref ? { ...base(ref, file), end_b: { kind: 'equipment', name: 'M 3~' } } : base(ref, file));
+    const res = await targetedCheck({ sheets: P.sheets, drawings: P.drawings, ruleRows: P.rows, provider: ai });
+    const row = res.rows.find(r => r.ref === target.ref);
+    assert.ok(![row.source, row.destination].some(x => /M 3~/.test(x)), `${row.source} / ${row.destination}`);
+    assert.notStrictEqual(row.check.status, 'filled');
   });
 
   await test('an AI that reads like the correct schedule: what would it catch?', async () => {
