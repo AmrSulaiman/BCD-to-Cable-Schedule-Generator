@@ -140,12 +140,12 @@ The rules engine reads the drawings exactly, and it knows when it is unsure. The
    | Sure | Clear-cut reading | No |
 
    The page says how many of each before the check runs.
-3. **Ask.** Close-ups go to the AI in small batches (one sheet, up to 5 cables per request, 3 requests at a time), each with the exact words the PDF prints in that area so names are spelled right. The AI is **not** told what the rules engine read, so its reading is independent. If the cable's line runs off the edge of the close-up, it is asked once more with a wider area.
+3. **Ask.** Close-ups go to the AI in small batches (one sheet, up to 8 cables per request, spaced about 13 seconds apart to stay under the free limit of 5 requests a minute), each with the exact words the PDF prints in that area so names are spelled right. The AI is **not** told what the rules engine read, so its reading is independent. If the cable's line runs off the edge of the close-up, it is asked once more with a wider area.
 4. **Check and compare.** The answer is checked by code (right cable, right image, known kinds of end). The AI's reading replaces the rules engine's reading of that cable on that sheet and goes through the same merge and naming rules, and the two rows are compared field by field.
 5. **Escalate.** If a spot check disagrees, the rules engine has a blind spot on that sheet, so every other cable on that sheet is checked too.
 6. **Result.** Every row gets a status: **Confirmed**, **Disputed** (both readings shown, one click picks the right one), **AI filled in**, **Needs a person**, **Not needed** or **Not checked**. Nothing the AI says is applied without being marked; a confirmation removes the "please check" flag it was sent for and leaves a note.
 
-For the two test projects this sends about 14 close-ups in 5 requests per project, instead of every sheet in full. Scanned sheets (no text layer) are the exception: the rules engine cannot read them, so the AI reads those sheets whole (overview plus tiles) as before.
+For the two test projects this sends about 14 close-ups in 4 requests per project, instead of every sheet in full. Scanned sheets (no text layer) are the exception: the rules engine cannot read them, so the AI reads those sheets whole (overview plus tiles) as before.
 
 It is an AI step inside a fixed pipeline, not an agent: the code decides what to ask and what to do with the answer; the AI only reads.
 

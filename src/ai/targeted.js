@@ -35,7 +35,7 @@ import { toSheetScale } from './render.js';
 import { CHECK_VERSION, CHECK_SYSTEM, CHECK_SCHEMA, checkUserText } from './prompt.js';
 import { FIELDS, toCable, fieldText, compareField, clean } from './crosscheck.js';
 
-const BATCH = 5;
+const BATCH = 8;   // cables per request: fewer requests, as the free tier allows only ~5 a minute and ~20 a day
 const SPOTS_PER_SHEET = 2;
 
 // stable pseudo-random order, so the same drawings always get the same spot checks
@@ -101,7 +101,7 @@ const widen = ([x0, y0, x1, y1], W, H) => {
  * sheets: [{ drawing, texts: [{str,x0,y0,x1,y1}], renderRegion: async ([x0,y0,x1,y1]) => { mime, data } }]
  * drawings: the rules engine's drawings (extractDrawing results), ruleRows: mergeDrawings(drawings).rows
  */
-export async function targetedCheck({ sheets, drawings, ruleRows, rules = DEFAULT_RULES, provider, onProgress = () => {}, parallel = 3, spots = SPOTS_PER_SHEET, escalate = true }) {
+export async function targetedCheck({ sheets, drawings, ruleRows, rules = DEFAULT_RULES, provider, onProgress = () => {}, parallel = 2, spots = SPOTS_PER_SHEET, escalate = true }) {
   const t0 = Date.now();
   const log = [];
   const raw = { promptVersion: CHECK_VERSION, check: {} };

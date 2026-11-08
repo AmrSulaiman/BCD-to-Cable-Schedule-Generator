@@ -202,7 +202,7 @@ async function runAI(retry = false) {
   try {
     // close-ups are small, so the AI answers quickly: a short time limit per request
     // (Safari also drops requests that get no answer for about a minute)
-    const live = geminiProvider({ apiKey: key, onWait: say, isStopped: () => aiRun.stopped, ...(anyScanned() ? {} : { timeoutMs: 50000, budgetMs: 150000 }), ...(globalThis.BCD_AI_OPTIONS || {}) });
+    const live = geminiProvider({ apiKey: key, onWait: say, isStopped: () => aiRun.stopped, ...(anyScanned() ? {} : { timeoutMs: 50000, budgetMs: 150000, gapMs: 13000 }), ...(globalThis.BCD_AI_OPTIONS || {}) });
     const prov = retry && state.ai?.files === files ? resumeProvider(state.ai.store, live) : recordingProvider(live);
     const res = await runCheck(prov, say);
     const failed = res.log.filter(l => /failed|stopped/.test(l)).length;
