@@ -107,6 +107,29 @@ tr.flagged .dot { background: var(--warn); }
 .flags { min-width: 260px; }
 .chip { display: block; font-size: 0.8rem; color: var(--warn); line-height: 1.35; margin-bottom: 3px; }
 .sheets { white-space: nowrap; }
+.ai { border-top: 1px solid var(--rule); padding-top: 12px; display: grid; gap: 10px; }
+.ai .switch { display: flex; gap: 8px; align-items: flex-start; font-size: 0.9rem; cursor: pointer; }
+.ai .switch input { margin-top: 4px; }
+#ai-panel { display: grid; gap: 10px; }
+#ai-panel[hidden] { display: none; }
+#ai-panel label { display: grid; gap: 3px; font-size: 0.82rem; color: var(--muted); }
+#ai-panel label.inline { display: flex; gap: 6px; align-items: center; }
+.notice { margin: 0; font-size: 0.82rem; border-left: 3px solid var(--warn); padding: 4px 0 4px 10px; color: var(--ink); }
+.ai-result { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 0.86rem; align-items: baseline; }
+.ai-result details { flex-basis: 100%; color: var(--muted); }
+.ai-result ul { margin: 4px 0 0; padding-left: 18px; }
+.ok { color: var(--good); } .warnc { color: var(--warn); } .badc { color: var(--bad); }
+.badge { display: inline-block; font-size: 0.74rem; font-weight: 600; padding: 2px 7px; border: 1px solid var(--rule); white-space: nowrap; }
+.badge[data-st=agreed] { color: var(--good); border-color: var(--good); }
+.badge[data-st=disputed], .badge[data-st=unconfirmed], .badge[data-st=ai_only], .badge[data-st=rules_only] { color: var(--warn); border-color: var(--warn); background: var(--warn-bg); }
+.badge[data-st=not_checked] { color: var(--bad); border-color: var(--bad); }
+td.disputed { box-shadow: inset 3px 0 0 var(--warn); }
+.pick { display: grid; gap: 3px; margin-bottom: 8px; font-size: 0.8rem; }
+.pick-label { font-weight: 600; color: var(--muted); font-size: 0.74rem; text-transform: uppercase; letter-spacing: .03em; }
+button.opt { background: var(--sheet); color: var(--ink); border: 1px solid var(--rule); padding: 3px 8px; font-size: 0.8rem; font-weight: 400; text-align: left; }
+button.opt:hover { border-color: var(--accent); }
+button.opt.rec { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
+.why { color: var(--muted); font-size: 0.78rem; }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 </style>
 </head>
@@ -117,7 +140,7 @@ tr.flagged .dot { background: var(--warn); }
       <h1>BCD to Cable Schedule</h1>
       <p>Drop the block cable diagrams for one schedule. The tool reads every cable reference, traces each cable to its source and destination, merges cables shown on more than one sheet, and fills the company cable schedule template.</p>
     </div>
-    <div class="local"><b>Stays on this computer.</b> Drawings are read inside your browser and never uploaded.</div>
+    <div class="local"><b>Runs on this computer.</b> Drawings are read inside your browser. They are only sent out if you run the optional AI cross-check.</div>
   </div>
 </header>
 
@@ -151,6 +174,17 @@ tr.flagged .dot { background: var(--warn); }
         <div class="tpl"><span class="muted">Template:</span> <span id="tpl-name">Built-in company template</span>
           <label for="tpl">use a different .xlsx</label><input id="tpl" class="sr" type="file" accept=".xlsx"></div>
         <p class="muted" style="margin:0;font-size:.82rem">Voltage comes from the band: B1 = 24V, B2 and B1&amp;B2 = 400V. Length, CPC type, installation method and comments are left blank.</p>
+      </div>
+      <div class="ai">
+        <label class="switch" for="ai-on"><input id="ai-on" type="checkbox"> <span><b>AI cross-check</b> (optional): a second, independent reading of the drawings by Google Gemini</span></label>
+        <div id="ai-panel" hidden>
+          <p class="notice">When you run it, images of the drawings are sent to Google's Gemini service. On Google's free tier, Google may use what you send to improve its products. The rules engine's reading never leaves this computer.</p>
+          <label for="ai-key">Gemini API key <span class="muted">(free from aistudio.google.com → Get API key)</span>
+            <input id="ai-key" type="password" autocomplete="off" spellcheck="false" placeholder="Paste your key"></label>
+          <label class="inline" for="ai-remember"><input id="ai-remember" type="checkbox"> Remember the key in this browser</label>
+          <div class="actions"><button id="btn-ai" type="button" disabled>Run AI cross-check</button></div>
+          <div id="ai-result" class="ai-result"></div>
+        </div>
       </div>
     </div>
   </section>
@@ -760,8 +794,21 @@ function extractDrawing(geom, fileName = "", rules = DEFAULT_RULES) {
     for (const n of rec.ends) if (n.kind === "unknown") rec.flags.push(`Could not identify the equipment at the cable end near (${n.at.join(", ")})`);
     resolved.push(rec);
   }
+  const pts = [];
+  if (strip) pts.push([strip.x0, strip.y0], [strip.x1, strip.y1]);
+  for (const L of labels) pts.push([L.t.x0, L.t.y0], [L.t.x1, L.t.y1]);
+  for (const r of resolved) for (const n of r.ends) if (n.pos) pts.push(n.pos);
+  for (const b of blocks || []) pts.push([b.x0, b.y0], [b.x1, b.y1]);
+  const pad = 40;
+  const area = pts.length ? [
+    Math.max(0, Math.min(...pts.map((p) => p[0])) - pad),
+    Math.max(0, Math.min(...pts.map((p) => p[1])) - pad),
+    Math.min(isFinite(tbX) ? tbX : geom.width, Math.max(...pts.map((p) => p[0])) + pad),
+    Math.min(geom.height, Math.max(...pts.map((p) => p[1])) + pad)
+  ].map(Math.round) : [0, 0, Math.round(geom.width), Math.round(geom.height)];
   return {
     file: fileName,
+    page: { width: Math.round(geom.width), height: Math.round(geom.height), area, textCount: texts.length },
     drawing: { ...tb, _titleBlockX: void 0 },
     panel: strip ? { name: strip.name, rawName: strip.rawName } : null,
     cables: resolved,
@@ -850,14 +897,14 @@ function mergeDrawings(drawings, rules = DEFAULT_RULES) {
       pair.sort((a, b) => RANK(a) - RANK(b) || (Math.abs((a.pos?.[1] ?? 0) - (b.pos?.[1] ?? 0)) > 3 ? (a.pos?.[1] ?? 0) - (b.pos?.[1] ?? 0) : (a.pos?.[0] ?? 0) - (b.pos?.[0] ?? 0)));
       if (!votesAgree) flags.push("Drawings disagree on direction (both say FROM or both say TO) \u2014 check source/destination");
     }
-    const pick = (k, label) => {
+    const pick2 = (k, label) => {
       const vals = [...new Set(inst.map((i) => i.c[k]).filter(Boolean))];
       if (vals.length > 1) flags.push(`${label} differs between drawings: ${vals.map((v, i) => v).join(" vs ")} (${inst.filter((i) => i.c[k]).map((i) => sheetOf(i.d)).join(" vs ")})`);
       return vals[0] || "";
     };
     if (rules.direction === "field-first") pair.reverse();
-    let band = pick("band", "Band");
-    const type = pick("type", "Cable type"), size = pick("size", "Size");
+    let band = pick2("band", "Band");
+    const type = pick2("type", "Cable type"), size = pick2("size", "Size");
     const pre = (ref.match(/^[A-Z]+/) || [""])[0];
     const expect = rules.prefixBand[pre];
     if (!band && expect) {
@@ -921,12 +968,580 @@ async function buildWorkbook(ExcelJS, templateBuffer, header2, rows) {
   return wb.xlsx.writeBuffer();
 }
 
+// src/ai/render.js
+var DEFAULT_RENDER = { cols: 3, rows: 2, overlap: 0.08, tilePx: 1600, overviewPx: 2e3 };
+async function renderPageForAI(page, { makeCanvas, encode, area, ...opts }) {
+  const o = { ...DEFAULT_RENDER, ...opts };
+  const base = page.getViewport({ scale: 1 });
+  const [ax0, ay0, ax1, ay1] = area || [0, 0, base.width, base.height];
+  const aw = ax1 - ax0, ah = ay1 - ay0;
+  const tileW = aw / o.cols * (1 + o.overlap * 2);
+  const scale = Math.min(o.tilePx / tileW, 4);
+  const vp = page.getViewport({ scale, offsetX: -ax0 * scale, offsetY: -ay0 * scale });
+  const W = Math.round(aw * scale), H = Math.round(ah * scale);
+  const big = makeCanvas(W, H);
+  const ctx = big.getContext("2d");
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, W, H);
+  await page.render({ canvasContext: ctx, viewport: vp, background: "rgb(255,255,255)" }).promise;
+  const sx = (px) => Math.round((ax0 + px / scale) / base.width * 1e3);
+  const sy = (py) => Math.round((ay0 + py / scale) / base.height * 1e3);
+  const images = [];
+  const ow = Math.min(o.overviewPx, W), oh = Math.round(H * ow / W);
+  const ov = makeCanvas(ow, oh);
+  const octx = ov.getContext("2d");
+  octx.fillStyle = "#ffffff";
+  octx.fillRect(0, 0, ow, oh);
+  octx.drawImage(big, 0, 0, W, H, 0, 0, ow, oh);
+  images.push({ name: "overview", box: [sx(0), sy(0), sx(W), sy(H)], mime: "image/png", data: await encode(ov) });
+  const cw = W / o.cols, ch = H / o.rows;
+  for (let r = 0; r < o.rows; r++) for (let c = 0; c < o.cols; c++) {
+    const x0 = Math.max(0, Math.floor(c * cw - cw * o.overlap)), x1 = Math.min(W, Math.ceil((c + 1) * cw + cw * o.overlap));
+    const y0 = Math.max(0, Math.floor(r * ch - ch * o.overlap)), y1 = Math.min(H, Math.ceil((r + 1) * ch + ch * o.overlap));
+    const t = makeCanvas(x1 - x0, y1 - y0);
+    const tctx = t.getContext("2d");
+    tctx.drawImage(big, x0, y0, x1 - x0, y1 - y0, 0, 0, x1 - x0, y1 - y0);
+    images.push({
+      name: `tile row ${r + 1} col ${c + 1}`,
+      box: [sx(x0), sy(y0), sx(x1), sy(y1)],
+      mime: "image/png",
+      data: await encode(t)
+    });
+  }
+  return { width: base.width, height: base.height, images };
+}
+var toSheetScale = (x, y, width, height) => [Math.round(x / width * 1e3), Math.round(y / height * 1e3)];
+
+// src/ai/gemini.js
+var BASE = "https://generativelanguage.googleapis.com/v1beta";
+var AIError = class extends Error {
+  constructor(message, { status: status2, retryable } = {}) {
+    super(message);
+    this.status = status2;
+    this.retryable = !!retryable;
+  }
+};
+async function pickModel(apiKey, fetchImpl = fetch) {
+  const res = await fetchImpl(`${BASE}/models?pageSize=200`, { headers: { "x-goog-api-key": apiKey } });
+  if (!res.ok) throw await toError(res);
+  const { models = [] } = await res.json();
+  const ok = models.filter((m) => (m.supportedGenerationMethods || []).includes("generateContent")).map((m) => m.name.replace(/^models\//, "")).filter((n) => /^gemini-\d+(\.\d+)?-flash(-preview(-[\w-]+)?)?$/.test(n) && !/image|tts|audio|live|thinking/.test(n));
+  if (!ok.length) throw new AIError("No suitable Gemini Flash model is available for this key.");
+  const ver = (n) => parseFloat(n.match(/gemini-(\d+(\.\d+)?)/)[1]);
+  ok.sort((a, b) => ver(b) - ver(a) || /preview/.test(a) - /preview/.test(b));
+  return ok[0];
+}
+async function toError(res) {
+  let msg = `${res.status}`;
+  try {
+    const j = await res.json();
+    msg = j.error?.message || msg;
+  } catch {
+  }
+  if (res.status === 400 && /api key/i.test(msg)) return new AIError("The AI key was rejected. Check it was copied completely.", { status: 400 });
+  if (res.status === 403) return new AIError(`The AI key is not allowed to use this service: ${msg}`, { status: 403 });
+  if (res.status === 429) return new AIError("The free AI limit was reached. Wait a minute and try again.", { status: 429, retryable: true });
+  if (res.status >= 500) return new AIError(`The AI service had a problem (${res.status}).`, { status: res.status, retryable: true });
+  return new AIError(`AI request failed: ${msg}`, { status: res.status });
+}
+var sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+function geminiProvider({ apiKey, model, fetchImpl = (...a) => fetch(...a) }) {
+  let chosen = model;
+  return {
+    name: "Google Gemini",
+    async model() {
+      return chosen || (chosen = await pickModel(apiKey, fetchImpl));
+    },
+    async generate({ system, text, images = [], schema }) {
+      const m = await this.model();
+      const parts = [{ text }];
+      for (const im of images) {
+        parts.push({ text: `Image "${im.name}": shows x ${im.box[0]}\u2013${im.box[2]}, y ${im.box[1]}\u2013${im.box[3]} of the sheet.` });
+        parts.push({ inline_data: { mime_type: im.mime, data: im.data } });
+      }
+      const body = {
+        systemInstruction: { parts: [{ text: system }] },
+        contents: [{ role: "user", parts }],
+        generationConfig: { temperature: 0, responseMimeType: "application/json", responseSchema: schema }
+      };
+      let lastErr;
+      for (let attempt = 0; attempt < 4; attempt++) {
+        if (attempt) await sleep(2e3 * 2 ** (attempt - 1));
+        let res;
+        try {
+          res = await fetchImpl(`${BASE}/models/${m}:generateContent`, {
+            method: "POST",
+            headers: { "content-type": "application/json", "x-goog-api-key": apiKey },
+            body: JSON.stringify(body)
+          });
+        } catch (e) {
+          lastErr = new AIError(`Could not reach the AI service: ${e.message}`, { retryable: true });
+          continue;
+        }
+        if (!res.ok) {
+          lastErr = await toError(res);
+          if (lastErr.retryable) continue;
+          throw lastErr;
+        }
+        const j = await res.json();
+        const cand = j.candidates?.[0];
+        const out = cand?.content?.parts?.map((p) => p.text || "").join("") || "";
+        if (!out) {
+          lastErr = new AIError(`The AI returned no answer (${cand?.finishReason || j.promptFeedback?.blockReason || "unknown reason"}).`, { retryable: true });
+          continue;
+        }
+        try {
+          return { json: JSON.parse(out), model: m, usage: j.usageMetadata };
+        } catch {
+          lastErr = new AIError("The AI answer was not valid JSON.", { retryable: true });
+          continue;
+        }
+      }
+      throw lastErr;
+    }
+  };
+}
+
+// src/ai/prompt.js
+var PROMPT_VERSION = "read-v1";
+var READ_SYSTEM = `You are an experienced electrical engineer reading a block cable diagram (BCD) to produce a cable schedule. You read drawings carefully and literally, and you never guess.
+
+HOW THESE DRAWINGS ARE LAID OUT
+- A board schedule (header strip) runs across the top of the diagram. Its rows are titled REFERENCE (the board name, e.g. "Detention Tank LCP - Form 2a"), COMPARTMENT, TYPE/SIZE, WB REF, DESCRIPTION and TAG or WAY. Each column is one way of that board, and its DESCRIPTION says what it feeds (e.g. "STORM RETURN PUMP NO.1", "MAINS INCOMER").
+- Each cable is a line. Beside the line is its label: a cable reference such as L25NA1001, usually followed by a voltage band in brackets, (B1), (B2) or (B1&B2). On the other side of the line is the cable specification, e.g. "4c x 2.5mm\xB2 XLPE/SWA BS5467": the cores and size ("4c x 2.5mm\xB2") then the cable type ("XLPE/SWA BS5467").
+- Some labels are horizontal and connect to their cable with a leader line ending in an arrow.
+- A cable line that starts at the bottom of a header-strip column is connected to that board, at that way. A small controller box drawn directly under a column belongs to that board.
+- Other ends are: rectangular boxes with text inside (JB P01, ISO T01, TELEMETRY OUTSTATION, CONTROLLER), equipment symbols with a name written below or beside them (STORM RETURN PUMP NO.1, SMOKE DETECTOR), notes such as "FROM DRAWING 80065564-01-WAB-42056-NA-DR-E-00005" or "TO DRAWING ..." that mean the cable continues on another sheet, or "FROM DNO".
+- Vendor-supplied cables have references starting LC or ending -1 and may say "VENDOR CABLE" instead of a size.
+
+YOUR TASK
+For every cable reference in the list you are given, follow its line in both directions and report what is at each end, plus its cores and size, cable type and band.
+
+RULES
+- Copy text exactly as it appears on the drawing (spelling, capitals, mm\xB2, symbols).
+- For an end:
+  - board_way: name = the board name from the REFERENCE row; way = that column's DESCRIPTION.
+  - box: name = all the text inside the box, e.g. "JB P01".
+  - equipment: name = the label of the equipment, without power ratings like "5.5 kW".
+  - other_drawing: name = the note as written; drawing_number = the full drawing number.
+  - dno: for "FROM DNO" or similar.
+  - unknown: when you cannot see where the line ends. Do not guess.
+- The two ends may be given in either order.
+- cores_size: only the cores and size text (e.g. "4c x 2.5mm\xB2", "1PR x 0.75mm\xB2", "3 x 1c x 10mm\xB2"). For vendor cables with no size, use "VENDOR CABLE".
+- cable_type: the rest of the specification (e.g. "XLPE/SWA BS5467", "6181-Y", "G&Y", "VENDOR CABLE", "SUBCAB").
+- band: exactly "B1", "B2" or "B1&B2" as shown after the reference; empty string if none is shown.
+- If you cannot read a value clearly, use "unknown" and set confidence to "low".
+- Report each listed reference exactly once. Never invent a reference. If you see cable references on the sheet that are not in the list, put them only in other_refs_seen.
+
+POSITIONS
+Positions are given on a 0\u20131000 scale across the whole sheet: x from left to right, y from top to bottom. Each image states which part of the sheet it shows. Use the given label positions to find each cable.`;
+var READ_SYSTEM_NO_LIST = READ_SYSTEM.replace(
+  "For every cable reference in the list you are given, follow its line",
+  "This sheet has no readable text layer, so you are not given a list. Find every cable reference label on the sheet; for each one, follow its line"
+).replace(
+  "- Report each listed reference exactly once. Never invent a reference. If you see cable references on the sheet that are not in the list, put them only in other_refs_seen.",
+  "- Report each cable reference you can read exactly once. Never invent a reference. Leave other_refs_seen empty."
+);
+var END_SCHEMA = {
+  type: "object",
+  properties: {
+    kind: { type: "string", enum: ["board_way", "box", "equipment", "other_drawing", "dno", "unknown"] },
+    name: { type: "string" },
+    way: { type: "string" },
+    drawing_number: { type: "string" }
+  },
+  required: ["kind", "name"]
+};
+var READ_SCHEMA = {
+  type: "object",
+  properties: {
+    board_name: { type: "string", description: "The board name in the REFERENCE row of the header strip, as written. Empty if none." },
+    cables: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          ref: { type: "string" },
+          end_a: END_SCHEMA,
+          end_b: END_SCHEMA,
+          cores_size: { type: "string" },
+          cable_type: { type: "string" },
+          band: { type: "string" },
+          confidence: { type: "string", enum: ["high", "medium", "low"] },
+          note: { type: "string", description: "Anything unclear about this cable. Empty if nothing." }
+        },
+        required: ["ref", "end_a", "end_b", "cores_size", "cable_type", "band", "confidence"]
+      }
+    },
+    other_refs_seen: { type: "array", items: { type: "string" } }
+  },
+  required: ["board_name", "cables", "other_refs_seen"]
+};
+function readUserText(sheet, refs) {
+  const lines = [
+    `Sheet: ${sheet.title || sheet.file}${sheet.wbNumber ? ` (${sheet.wbNumber})` : ""}${sheet.clientNumber ? `, client drawing ${sheet.clientNumber}` : ""}.`
+  ];
+  if (refs.length) {
+    lines.push("", "Cable references on this sheet and where their labels are (x, y on the 0\u20131000 scale):");
+    for (const r of refs) lines.push(`- ${r.ref} at (${r.at[0]}, ${r.at[1]})`);
+  }
+  lines.push("", "The images follow: first an overview, then close-up tiles.");
+  return lines.join("\n");
+}
+var REVIEW_SYSTEM = `You are an experienced electrical engineer checking a cable schedule against its block cable diagram (BCD). Two readings of the same drawing disagree on some values. For each disputed value, look at the drawing and decide which reading matches it.
+
+Read the drawing literally. A cable is a line with its reference label beside it and its specification (cores, size, type) on the other side. Follow the line to see what is at each end: a header-strip column (that board), a box (the text inside it), an equipment symbol (its name), or a FROM/TO DRAWING note (another sheet).
+
+For each item answer:
+- "A" if reading A matches the drawing,
+- "B" if reading B matches the drawing,
+- "both" if they say the same thing in different words,
+- "neither" if neither matches, and give the correct value as written on the drawing,
+- "unclear" if the drawing does not let you decide.
+Give a one-sentence reason that points to what you see on the drawing. Never guess: use "unclear" when unsure.`;
+var REVIEW_SCHEMA = {
+  type: "object",
+  properties: {
+    decisions: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          choice: { type: "string", enum: ["A", "B", "both", "neither", "unclear"] },
+          value: { type: "string", description: 'Only when choice is "neither": the correct value as written on the drawing.' },
+          reason: { type: "string" }
+        },
+        required: ["id", "choice", "reason"]
+      }
+    }
+  },
+  required: ["decisions"]
+};
+function reviewUserText(sheet, items) {
+  const lines = [`Sheet: ${sheet.title || sheet.file}${sheet.wbNumber ? ` (${sheet.wbNumber})` : ""}.`, "", "Disputed values:"];
+  for (const it of items) {
+    lines.push(`- id ${it.id}: cable ${it.ref} (label at ${it.at[0]}, ${it.at[1]}), ${it.label}.`);
+    lines.push(`    A: ${it.a}`);
+    lines.push(`    B: ${it.b}`);
+  }
+  lines.push("", "The images follow: first an overview, then close-up tiles.");
+  return lines.join("\n");
+}
+
+// src/ai/crosscheck.js
+var REF_RE2 = /^[A-Z]{1,3}\d{2}[A-Z]{2}[0-9X]{3,5}(?:-\d+)?$/;
+var FIELDS = [["ends", "Source / destination"], ["type", "Cable type"], ["size", "Cores & size"], ["band", "Band"]];
+var blank = (v) => !v || /^unknown$/i.test(String(v).trim());
+var clean = (v) => blank(v) ? "" : String(v).replace(/\s+/g, " ").trim();
+var normName = (s) => String(s || "").toLowerCase().replace(/²/g, "2").replace(/×/g, "x").replace(/[^a-z0-9&+]/g, "");
+var normBand = (b) => {
+  const m = String(b || "").toUpperCase().replace(/\s+/g, "").match(/^\(?(B1&B2|B1\+B2|B1\/B2|B1|B2)\)?$/);
+  return m ? m[1].replace(/[+\/]/, "&") : "";
+};
+function sanitiseRead(json, sheet, listed) {
+  const notes = [];
+  const listedSet = new Set(listed);
+  const text = (sheet.pageText || "").replace(/\s+/g, "");
+  const seen = /* @__PURE__ */ new Set();
+  const cables = [], extras = [];
+  for (const c of Array.isArray(json?.cables) ? json.cables : []) {
+    const ref = String(c?.ref || "").replace(/\s+/g, "").toUpperCase();
+    if (!REF_RE2.test(ref)) {
+      notes.push(`Ignored "${c?.ref}": not a valid cable reference`);
+      continue;
+    }
+    if (seen.has(ref)) {
+      notes.push(`Ignored a second reading of ${ref}`);
+      continue;
+    }
+    seen.add(ref);
+    if (listed.length && !listedSet.has(ref)) {
+      extras.push({ ...c, ref });
+      continue;
+    }
+    cables.push({ ...c, ref });
+  }
+  for (const r of Array.isArray(json?.other_refs_seen) ? json.other_refs_seen : []) {
+    const ref = String(r || "").replace(/\s+/g, "").toUpperCase();
+    if (REF_RE2.test(ref) && !seen.has(ref) && !listedSet.has(ref)) {
+      seen.add(ref);
+      extras.push({ ref, end_a: { kind: "unknown", name: "" }, end_b: { kind: "unknown", name: "" } });
+    }
+  }
+  const keptExtras = [];
+  for (const e of extras) {
+    if (!text || text.includes(e.ref)) keptExtras.push(e);
+    else notes.push(`Ignored ${e.ref}: the AI reported it but it is not in the drawing's text`);
+  }
+  const missing = listed.filter((r) => !seen.has(r));
+  return { board: clean(json?.board_name), cables, extras: keptExtras, missing, notes };
+}
+function toEnd(e) {
+  const kind = e?.kind, name = clean(e?.name);
+  if (kind === "board_way") return { kind: "panel", name: name.replace(/\s*-\s*FORM\s*\w+\s*$/i, ""), way: clean(e?.way) };
+  if (kind === "box") return { kind: "box", name };
+  if (kind === "equipment") return { kind: "device", name: name.replace(/\s*[\d.]+\s*kW\b/ig, "").trim() };
+  if (kind === "dno") return { kind: "dno", name: "DNO" };
+  if (kind === "other_drawing") {
+    const all = `${e?.drawing_number || ""} ${name}`.replace(/\s+/g, "");
+    const verb = (name.match(/^(FROM|TO|SEE)/i) || ["", "SEE"])[1].toUpperCase();
+    const note = (name.match(/\(([^)]*)\)\s*$/) || ["", ""])[1];
+    return { kind: "offsheet", verb, drawing: (all.match(DWG_RE) || [""])[0], note, name: "", text: name };
+  }
+  return { kind: "unknown", name: "" };
+}
+function toCable(c) {
+  let size = clean(c.cores_size), type = clean(c.cable_type);
+  if (size && type && normName(size).includes(normName(type))) type = "";
+  const spec = parseSpec(`${size} ${type}`.trim());
+  return {
+    ref: c.ref,
+    band: normBand(c.band),
+    type: spec.type,
+    size: spec.size,
+    ends: [toEnd(c.end_a), toEnd(c.end_b)],
+    flags: [],
+    confidence: c.confidence || "",
+    note: clean(c.note)
+  };
+}
+function fieldText(row, f) {
+  if (f === "ends") return [row.source, row.destination].filter(Boolean).join(" \u2194 ") || "(not found)";
+  return row[f] || "(not found)";
+}
+function compareField(f, r, a) {
+  if (f === "ends") {
+    const R = [r.source, r.destination].filter(Boolean).map(normName);
+    const A = [a.source, a.destination].filter(Boolean).map(normName);
+    if (!A.length) return R.length ? "ai_empty" : "both_empty";
+    if (!R.length) return "filled";
+    if (R.length === 2 && A.length === 2 && R.every((x2) => A.includes(x2))) return "agree";
+    if (R.length < 2 && R.every((x2) => A.includes(x2)) && A.length === 2) return "filled";
+    return "differ";
+  }
+  const x = normName(r[f]), y = normName(a[f]);
+  if (!y) return x ? "ai_empty" : "both_empty";
+  if (!x) return "filled";
+  return x === y ? "agree" : "differ";
+}
+async function crossCheck({ sheets, ruleRows, rules = DEFAULT_RULES, provider, onProgress = () => {
+}, review = true }) {
+  const log = [];
+  const raw = { promptVersion: PROMPT_VERSION, read: {}, review: {} };
+  const model = await provider.model();
+  const sheetKey = (s) => `${s.drawing.file}`;
+  const imageCache = /* @__PURE__ */ new Map();
+  const images = async (s) => {
+    if (!imageCache.has(s)) imageCache.set(s, await s.getImages());
+    return imageCache.get(s);
+  };
+  const aiDrawings = [], failed = /* @__PURE__ */ new Set(), missingByRef = /* @__PURE__ */ new Map();
+  for (const [i, s] of sheets.entries()) {
+    const d = s.drawing;
+    onProgress(`AI reading sheet ${i + 1} of ${sheets.length}: ${d.drawing.title || d.file}`);
+    const refs = d.cables.map((c) => ({ ref: c.ref, at: toSheetScale(c.at[0], c.at[1], d.page.width, d.page.height) }));
+    const noList = refs.length === 0;
+    try {
+      const imgs = await images(s);
+      const res = await provider.generate({
+        tag: `read:${sheetKey(s)}`,
+        system: noList ? READ_SYSTEM_NO_LIST : READ_SYSTEM,
+        text: readUserText({ ...d.drawing, file: d.file }, refs),
+        images: imgs,
+        schema: READ_SCHEMA
+      });
+      raw.read[sheetKey(s)] = res.json;
+      const r = sanitiseRead(res.json, s, refs.map((x) => x.ref));
+      for (const n of r.notes) log.push(`${d.file}: ${n}`);
+      for (const ref of r.missing) missingByRef.set(ref, d.file);
+      const posOf = new Map(d.cables.map((c) => [c.ref, c.at]));
+      aiDrawings.push({
+        file: d.file,
+        drawing: d.drawing,
+        panel: { name: r.board || d.panel?.name || "" },
+        cables: [...r.cables, ...r.extras].map((c) => ({ ...toCable(c), at: posOf.get(c.ref) || null, aiOnly: !posOf.has(c.ref) }))
+      });
+    } catch (e) {
+      failed.add(d.file);
+      log.push(`${d.file}: AI reading failed: ${e.message}`);
+    }
+  }
+  const aiRows = new Map(mergeDrawings(aiDrawings, rules).rows.map((r) => [r.ref, r]));
+  const aiOnlyRefs = new Set(aiDrawings.flatMap((d) => d.cables.filter((c) => c.aiOnly).map((c) => c.ref)));
+  const refSheets = /* @__PURE__ */ new Map();
+  for (const s of sheets) for (const c of s.drawing.cables) {
+    if (!refSheets.has(c.ref)) refSheets.set(c.ref, []);
+    refSheets.get(c.ref).push({ s, at: c.at });
+  }
+  const out = [];
+  const disputes = [];
+  for (const r of ruleRows) {
+    const row = { ...r, flags: [...r.flags] };
+    const a = aiRows.get(r.ref);
+    const onSheets = (refSheets.get(r.ref) || []).map((x) => x.s.drawing.file);
+    if (onSheets.length && onSheets.every((f) => failed.has(f))) {
+      row.check = { status: "not_checked" };
+      out.push(row);
+      continue;
+    }
+    if (!a) {
+      row.check = { status: "rules_only" };
+      row.flags.push("AI cross-check: the AI did not report this cable");
+      out.push(row);
+      continue;
+    }
+    const fields = {};
+    for (const [f, label] of FIELDS) {
+      const st = compareField(f, r, a);
+      fields[f] = { status: st, rules: fieldText(r, f), ai: fieldText(a, f) };
+      if (st === "filled") {
+        if (f === "ends") {
+          row.source = a.source;
+          row.destination = a.destination;
+        } else {
+          row[f] = a[f];
+          if (f === "band") row.voltage = a.voltage;
+        }
+        row.flags.push(`AI filled in ${label.toLowerCase()}: ${fields[f].ai}`);
+      } else if (st === "differ") {
+        row.flags.push(`AI reads ${label.toLowerCase()} as "${fields[f].ai}" (rules engine: "${fields[f].rules}")`);
+        disputes.push({ row, f, label, a });
+      } else if (st === "ai_empty") {
+        row.flags.push(`AI could not read ${label.toLowerCase()}; rules engine value not confirmed`);
+      }
+    }
+    const sts = Object.values(fields).map((x) => x.status);
+    row.check = {
+      status: sts.includes("differ") ? "disputed" : sts.some((s) => s === "filled" || s === "ai_empty") ? "unconfirmed" : "agreed",
+      fields
+    };
+    out.push(row);
+  }
+  for (const [ref, a] of aiRows) {
+    if (ruleRows.some((r) => r.ref === ref)) continue;
+    if (!aiOnlyRefs.has(ref)) continue;
+    out.push({ ...a, flags: [...a.flags, "Found by the AI only: the rules engine did not find this cable"], check: { status: "ai_only" } });
+  }
+  if (review && disputes.length) {
+    const bySheet = /* @__PURE__ */ new Map();
+    disputes.forEach((d, i) => {
+      const loc = (refSheets.get(d.row.ref) || [])[0];
+      if (!loc || failed.has(loc.s.drawing.file)) return;
+      const id = String(i + 1);
+      const item = { id, ref: d.row.ref, at: toSheetScale(loc.at[0], loc.at[1], loc.s.drawing.page.width, loc.s.drawing.page.height), label: d.label.toLowerCase(), a: d.row.check.fields[d.f].rules, b: d.row.check.fields[d.f].ai, d };
+      if (!bySheet.has(loc.s)) bySheet.set(loc.s, []);
+      bySheet.get(loc.s).push(item);
+    });
+    let n = 0;
+    for (const [s, items] of bySheet) {
+      n++;
+      onProgress(`AI reviewing ${items.length} disputed value${items.length === 1 ? "" : "s"} (sheet ${n} of ${bySheet.size})`);
+      try {
+        const res = await provider.generate({
+          tag: `review:${sheetKey(s)}`,
+          system: REVIEW_SYSTEM,
+          text: reviewUserText({ ...s.drawing.drawing, file: s.drawing.file }, items),
+          images: await images(s),
+          schema: REVIEW_SCHEMA
+        });
+        raw.review[sheetKey(s)] = res.json;
+        const byId = new Map((res.json?.decisions || []).map((x) => [String(x.id), x]));
+        for (const it of items) {
+          const dec = byId.get(it.id);
+          const { row, f, label, a } = it.d;
+          const fld = row.check.fields[f];
+          if (!dec) {
+            fld.review = { choice: "none", reason: "The AI review gave no answer for this value." };
+            continue;
+          }
+          fld.review = { choice: dec.choice, reason: clean(dec.reason), value: clean(dec.value) };
+          if (dec.choice === "B") {
+            if (f === "ends") {
+              row.source = a.source;
+              row.destination = a.destination;
+            } else {
+              row[f] = a[f];
+              if (f === "band") row.voltage = a.voltage;
+            }
+            row.flags.push(`AI review changed ${label.toLowerCase()} to "${fld.ai}": ${fld.review.reason}`);
+          } else if (dec.choice === "neither" && fld.review.value && f !== "ends") {
+            const v = f === "size" ? parseSpec(fld.review.value).size || fld.review.value : f === "band" ? normBand(fld.review.value) || fld.review.value : fld.review.value;
+            row[f] = v;
+            row.flags.push(`AI review says the drawing shows ${label.toLowerCase()} "${v}" (neither reading): ${fld.review.reason}`);
+          } else if (dec.choice === "A" || dec.choice === "both") {
+            row.flags.push(`AI review kept the rules engine's ${label.toLowerCase()}: ${fld.review.reason}`);
+          } else {
+            row.flags.push(`AI review could not decide ${label.toLowerCase()}${fld.review.value ? ` (suggests "${fld.review.value}")` : ""}: ${fld.review.reason}`);
+          }
+        }
+      } catch (e) {
+        log.push(`${s.drawing.file}: AI review failed: ${e.message}`);
+      }
+    }
+  }
+  for (const f of failed) log.push(`${f}: not checked by the AI; its rows show the rules engine's reading only`);
+  out.sort(rules.sortRows);
+  const count = (st) => out.filter((r) => r.check?.status === st).length;
+  return {
+    rows: out,
+    aiRows: [...aiRows.values()],
+    log,
+    raw,
+    model,
+    provider: provider.name,
+    summary: { agreed: count("agreed"), disputed: count("disputed"), unconfirmed: count("unconfirmed"), aiOnly: count("ai_only"), rulesOnly: count("rules_only"), notChecked: count("not_checked") }
+  };
+}
+function recordingProvider(inner, store2 = {}) {
+  return {
+    name: inner.name,
+    model: () => inner.model(),
+    store: store2,
+    async generate(args) {
+      const r = await inner.generate(args);
+      store2[args.tag] = { model: r.model, json: r.json };
+      return r;
+    }
+  };
+}
+function replayProvider(store2, name = "Saved AI answers") {
+  const first = Object.values(store2)[0];
+  return {
+    name,
+    model: async () => first?.model || "replay",
+    async generate({ tag }) {
+      if (!store2[tag]) throw new Error(`No saved AI answer for ${tag}`);
+      return store2[tag];
+    }
+  };
+}
+
 // src/app.js
 pdfjs.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.worker.min.mjs";
 var $ = (s) => document.querySelector(s);
-var state = { drawings: [], rows: [], template: null, templateName: "Built-in template", onlyFlagged: false };
+var state = {
+  drawings: [],
+  rows: [],
+  template: null,
+  onlyFlagged: false,
+  sources: /* @__PURE__ */ new Map(),
+  // file -> { bytes, page, pageText }   kept so the AI can render the sheet later
+  ai: null
+  // { store, model, provider, summary, log, files }  last AI cross-check
+};
 var HEAD = ["Cable ref", "Source", "Destination", "Cable type", "Cores & size", "Voltage", "Band"];
 var EDITABLE = ["ref", "source", "destination", "type", "size", "voltage", "band"];
+var FIELD_COLS = { ends: ["source", "destination"], type: ["type"], size: ["size"], band: ["band"] };
+var FIELD_LABEL = { ends: "Ends", type: "Type", size: "Size", band: "Band" };
+var STATUS = {
+  agreed: ["Agreed", "AI and rules engine agree"],
+  disputed: ["Disputed", "AI and rules engine disagree"],
+  unconfirmed: ["Unconfirmed", "Partly confirmed by the AI"],
+  ai_only: ["AI only", "Found by the AI only"],
+  rules_only: ["Rules only", "The AI did not report this cable"],
+  not_checked: ["Not checked", "The AI could not read this sheet"]
+};
 function b64ToBuf(b64) {
   const bin = atob(b64);
   const u = new Uint8Array(bin.length);
@@ -940,6 +1555,18 @@ var status = (msg, kind = "") => {
   el.textContent = msg;
   el.dataset.kind = kind;
 };
+var store = { get(k) {
+  try {
+    return localStorage.getItem(k);
+  } catch {
+    return null;
+  }
+}, set(k, v) {
+  try {
+    v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v);
+  } catch {
+  }
+} };
 async function readFiles(files) {
   const pdfs = [...files].filter((f) => /\.pdf$/i.test(f.name));
   if (!pdfs.length) {
@@ -949,17 +1576,19 @@ async function readFiles(files) {
   for (const [i, f] of pdfs.entries()) {
     status(`Reading ${f.name} (${i + 1} of ${pdfs.length})\u2026`);
     try {
-      const doc = await pdfjs.getDocument({ data: new Uint8Array(await f.arrayBuffer()), verbosity: 0 }).promise;
+      const bytes = new Uint8Array(await f.arrayBuffer());
+      const doc = await pdfjs.getDocument({ data: bytes.slice(), verbosity: 0 }).promise;
       for (let p = 1; p <= doc.numPages; p++) {
         const geom = await readPage(pdfjs, await doc.getPage(p));
         const d = extractDrawing(geom, doc.numPages > 1 ? `${f.name} (page ${p})` : f.name);
         d.warn = [];
-        if (geom.texts.length < 10) d.warn.push("No text layer: looks like a scanned PDF. Export it again from AutoCAD as a vector PDF.");
+        if (geom.texts.length < 10) d.warn.push("No text layer: looks like a scanned PDF. Only the AI cross-check can read it.");
         else if (!d.panel) d.warn.push("No board header strip found (REFERENCE / DESCRIPTION rows).");
         if (!d.cables.length && geom.texts.length >= 10) d.warn.push("No cable references found.");
         if (!d.drawing.clientNumber) d.warn.push("Client drawing number not found, so links from other sheets to this one cannot be resolved.");
         state.drawings = state.drawings.filter((x) => x.file !== d.file && !(d.drawing.wbNumber && x.drawing.wbNumber === d.drawing.wbNumber));
         state.drawings.push(d);
+        state.sources.set(d.file, { bytes, page: p, pageText: geom.texts.map((t) => t.str).join(" ") });
       }
     } catch (e) {
       console.error(e);
@@ -967,8 +1596,8 @@ async function readFiles(files) {
     }
   }
   fillHeaderDefaults();
-  remerge();
-  status(`Read ${state.drawings.length} drawing${state.drawings.length === 1 ? "" : "s"}.`, "good");
+  await remerge();
+  status(`Read ${state.drawings.length} drawing${state.drawings.length === 1 ? "" : "s"}.${$("#ai-on").checked ? ' Click "Run AI cross-check" to check them with the AI.' : ""}`, "good");
 }
 function fillHeaderDefaults() {
   const d = state.drawings.find((x) => x.drawing.project || x.drawing.clientNumber);
@@ -981,10 +1610,89 @@ function fillHeaderDefaults() {
   const m = (d.drawing.clientNumber || "").match(/^(\d+-\d+)/);
   set("#h-number", m ? m[1] : "");
 }
-function remerge() {
-  const rules = { ...DEFAULT_RULES, direction: $("#direction").value };
-  state.rows = mergeDrawings(state.drawings, rules).rows;
+var rulesNow = () => ({ ...DEFAULT_RULES, direction: $("#direction").value });
+var sheetsFor = () => state.drawings.map((d) => {
+  const src = state.sources.get(d.file);
+  return {
+    drawing: d,
+    pageText: src?.pageText || "",
+    getImages: async () => {
+      const doc = await pdfjs.getDocument({ data: src.bytes.slice(), verbosity: 0 }).promise;
+      const page = await doc.getPage(src.page);
+      const r = await renderPageForAI(page, {
+        area: d.page.area,
+        makeCanvas: (w, h) => {
+          const c = document.createElement("canvas");
+          c.width = w;
+          c.height = h;
+          return c;
+        },
+        encode: async (c) => c.toDataURL("image/png").split(",")[1]
+      });
+      return r.images;
+    }
+  };
+});
+async function remerge() {
+  const rules = rulesNow();
+  const ruleRows = mergeDrawings(state.drawings, rules).rows;
+  const files = state.drawings.map((d) => d.file).sort().join("|");
+  if (state.ai && state.ai.files === files) {
+    const res = await crossCheck({ sheets: sheetsFor(), ruleRows, rules, provider: replayProvider(state.ai.store, state.ai.provider) });
+    state.rows = res.rows;
+  } else {
+    if (state.ai) {
+      state.ai = null;
+      showAI();
+    }
+    state.rows = ruleRows;
+  }
   render();
+}
+function showAI() {
+  const on = $("#ai-on").checked;
+  $("#ai-panel").hidden = !on;
+  const btn = $("#btn-ai");
+  btn.disabled = !on || !state.drawings.length || !$("#ai-key").value.trim();
+  const s = state.ai?.summary;
+  $("#ai-result").innerHTML = s ? `
+    <span><b class="ok">${s.agreed}</b> agreed</span>
+    <span><b class="warnc">${s.disputed}</b> disputed</span>
+    ${s.unconfirmed ? `<span><b class="warnc">${s.unconfirmed}</b> partly confirmed</span>` : ""}
+    ${s.aiOnly ? `<span><b class="warnc">${s.aiOnly}</b> found by AI only</span>` : ""}
+    ${s.rulesOnly ? `<span><b class="warnc">${s.rulesOnly}</b> not reported by AI</span>` : ""}
+    ${s.notChecked ? `<span><b class="badc">${s.notChecked}</b> not checked</span>` : ""}
+    <span class="muted">${esc(state.ai.provider)} \xB7 ${esc(state.ai.model)}</span>
+    ${state.ai.log.length ? `<details><summary>${state.ai.log.length} note${state.ai.log.length === 1 ? "" : "s"} from the check</summary><ul>${state.ai.log.map((l) => `<li>${esc(l)}</li>`).join("")}</ul></details>` : ""}` : "";
+}
+async function runAI() {
+  const key = $("#ai-key").value.trim();
+  if (!key) {
+    status("Paste an AI key first.", "bad");
+    return;
+  }
+  if ($("#ai-remember").checked) store.set("bcd-ai-key", key);
+  else store.set("bcd-ai-key", null);
+  const btn = $("#btn-ai");
+  btn.disabled = true;
+  btn.textContent = "Checking\u2026";
+  try {
+    const rules = rulesNow();
+    const ruleRows = mergeDrawings(state.drawings, rules).rows;
+    const rec = recordingProvider(geminiProvider({ apiKey: key }));
+    const res = await crossCheck({ sheets: sheetsFor(), ruleRows, rules, provider: rec, onProgress: (m) => status(m + "\u2026") });
+    state.ai = { store: rec.store, model: res.model, provider: res.provider, summary: res.summary, log: res.log, raw: res.raw, files: state.drawings.map((d) => d.file).sort().join("|") };
+    state.rows = res.rows;
+    render();
+    const s = res.summary;
+    status(`AI cross-check done: ${s.agreed} agreed, ${s.disputed} disputed${s.notChecked ? `, ${s.notChecked} not checked` : ""}. Check the amber rows.`, s.disputed || s.notChecked ? "warn" : "good");
+  } catch (e) {
+    console.error(e);
+    status(`AI cross-check failed: ${e.message}. The schedule still shows the rules engine's reading.`, "bad");
+  } finally {
+    btn.textContent = "Run AI cross-check";
+    showAI();
+  }
 }
 function render() {
   const dl = $("#drawings");
@@ -1005,18 +1713,62 @@ function render() {
   $("#t-flag").textContent = flagged;
   $("#tile-flag").dataset.kind = flagged ? "warn" : "good";
   const rows = state.onlyFlagged ? state.rows.filter((r) => r.flags.length) : state.rows;
-  $("#thead").innerHTML = `<tr><th class="sev" aria-label="Status"></th>${HEAD.map((h) => `<th>${h}</th>`).join("")}<th>Sheets</th><th>Check</th></tr>`;
+  const withAI = !!state.ai;
+  $("#thead").innerHTML = `<tr><th class="sev" aria-label="Status"></th>${withAI ? "<th>AI check</th>" : ""}${HEAD.map((h) => `<th>${h}</th>`).join("")}<th>Sheets</th><th>Check</th></tr>`;
   $("#tbody").innerHTML = rows.length ? rows.map((r) => {
     const i = state.rows.indexOf(r);
+    const st = r.check?.status;
+    const disputedCols = /* @__PURE__ */ new Set();
+    const picks = [];
+    for (const [f, fld] of Object.entries(r.check?.fields || {})) {
+      if (fld.status !== "differ") continue;
+      FIELD_COLS[f].forEach((c) => disputedCols.add(c));
+      const rv = fld.review;
+      picks.push(`<div class="pick"><span class="pick-label">${FIELD_LABEL[f]}</span>
+        <button class="opt${rv && (rv.choice === "A" || rv.choice === "both") ? " rec" : ""}" data-i="${i}" data-f="${f}" data-v="rules">Rules: ${esc(fld.rules)}</button>
+        <button class="opt${rv && rv.choice === "B" ? " rec" : ""}" data-i="${i}" data-f="${f}" data-v="ai">AI: ${esc(fld.ai)}</button>
+        ${rv?.reason ? `<span class="why">AI review: ${esc(rv.reason)}</span>` : ""}</div>`);
+    }
+    const otherFlags = r.flags.filter((f) => !/^AI (reads|review)/.test(f));
     return `<tr class="${r.flags.length ? "flagged" : ""}">
       <td class="sev"><span class="dot" title="${r.flags.length ? "Needs checking" : "OK"}"></span></td>
-      ${EDITABLE.map((k) => `<td contenteditable="true" spellcheck="false" data-i="${i}" data-k="${k}" class="${k === "ref" || k === "size" ? "mono" : ""}">${esc(r[k])}</td>`).join("")}
+      ${withAI ? `<td><span class="badge" data-st="${st || "none"}" title="${esc(STATUS[st]?.[1] || "")}">${esc(STATUS[st]?.[0] || "\u2014")}</span></td>` : ""}
+      ${EDITABLE.map((k) => `<td contenteditable="true" spellcheck="false" data-i="${i}" data-k="${k}" class="${k === "ref" || k === "size" ? "mono" : ""}${disputedCols.has(k) ? " disputed" : ""}">${esc(r[k])}</td>`).join("")}
       <td class="sheets mono muted">${r.sheets.map((s) => esc(s.replace(/^.*-W-/, "W-"))).join("<br>")}</td>
-      <td class="flags">${r.flags.map((f) => `<span class="chip">${esc(f)}</span>`).join("")}</td>
+      <td class="flags">${picks.join("")}${otherFlags.map((f) => `<span class="chip">${esc(f)}</span>`).join("")}</td>
     </tr>`;
-  }).join("") : `<tr><td colspan="10" class="empty">${state.rows.length ? "No rows need checking." : "Drop BCD PDFs above to build the schedule."}</td></tr>`;
+  }).join("") : `<tr><td colspan="${withAI ? 11 : 10}" class="empty">${state.rows.length ? "No rows need checking." : "Drop BCD PDFs above to build the schedule."}</td></tr>`;
   const ready = state.rows.length > 0;
   for (const b of document.querySelectorAll("[data-needs-rows]")) b.disabled = !ready;
+  showAI();
+}
+function pick(i, f, which) {
+  const row = state.rows[i];
+  const fld = row.check.fields[f];
+  const src = which === "ai" ? fld.ai : fld.rules;
+  if (f === "ends") {
+    const [a, b] = src.split(" \u2194 ");
+    const cur = [row.source, row.destination];
+    if (cur.includes(b) && cur.indexOf(b) === 0) {
+      row.source = b;
+      row.destination = a || "";
+    } else {
+      row.source = a || "";
+      row.destination = b || "";
+    }
+  } else {
+    row[f] = src === "(not found)" ? "" : src;
+    if (f === "band") row.voltage = /B2/.test(row.band) ? DEFAULT_RULES.bandVoltage["B2"] : row.band === "B1" ? DEFAULT_RULES.bandVoltage["B1"] : row.voltage;
+  }
+  fld.status = "resolved";
+  fld.chosen = which;
+  const label = { ends: "source / destination", type: "cable type", size: "cores & size", band: "band" }[f];
+  row.flags = row.flags.filter((x) => !(/^AI (reads|review)/.test(x) && x.includes(label)));
+  if (!Object.values(row.check.fields).some((x) => x.status === "differ")) {
+    row.check.status = "agreed";
+    row.flags = row.flags.filter((x) => !/^AI (reads|review)/.test(x));
+  }
+  render();
 }
 var downloadsApi;
 async function saveFile(filename, data) {
@@ -1062,13 +1814,19 @@ async function exportXlsx() {
   if (unresolved) status(`Excel file ready. ${unresolved} row${unresolved === 1 ? "" : "s"} still marked for checking.`, "warn");
 }
 function exportJson() {
-  const out = { generated: (/* @__PURE__ */ new Date()).toISOString(), header: header(), drawings: state.drawings.map((d) => ({ file: d.file, drawing: d.drawing, panel: d.panel, cables: d.cables })), rows: state.rows };
+  const out = {
+    generated: (/* @__PURE__ */ new Date()).toISOString(),
+    header: header(),
+    drawings: state.drawings.map((d) => ({ file: d.file, drawing: d.drawing, panel: d.panel, cables: d.cables })),
+    ai: state.ai ? { provider: state.ai.provider, model: state.ai.model, summary: state.ai.summary, log: state.ai.log, answers: state.ai.raw } : null,
+    rows: state.rows
+  };
   saveFile(`${safeName(header().projectTitle)}_cables.json`, JSON.stringify(out, null, 2));
 }
 function exportReview() {
   const q = (s) => `"${String(s ?? "").replace(/"/g, '""')}"`;
-  const lines = [["Cable ref", "Source", "Destination", "Check"].map(q).join(",")];
-  for (const r of state.rows) for (const f of r.flags) lines.push([r.ref, r.source, r.destination, f].map(q).join(","));
+  const lines = [["Cable ref", "Source", "Destination", "AI check", "Check"].map(q).join(",")];
+  for (const r of state.rows) for (const f of r.flags) lines.push([r.ref, r.source, r.destination, STATUS[r.check?.status]?.[0] || "", f].map(q).join(","));
   saveFile(`${safeName(header().projectTitle)}_review_list.csv`, lines.join("\r\n"));
 }
 var drop = $("#drop");
@@ -1089,7 +1847,6 @@ $("#tpl").addEventListener("change", async (e) => {
   const f = e.target.files[0];
   if (!f) return;
   state.template = await f.arrayBuffer();
-  state.templateName = f.name;
   $("#tpl-name").textContent = f.name;
   e.target.value = "";
 });
@@ -1101,7 +1858,8 @@ $("#only-flagged").addEventListener("change", (e) => {
 $("#drawings").addEventListener("click", (e) => {
   const i = e.target.dataset.remove;
   if (i === void 0) return;
-  state.drawings.splice(+i, 1);
+  const [d] = state.drawings.splice(+i, 1);
+  state.sources.delete(d.file);
   remerge();
 });
 $("#tbody").addEventListener("input", (e) => {
@@ -1115,15 +1873,36 @@ $("#tbody").addEventListener("keydown", (e) => {
     e.target.blur();
   }
 });
+$("#tbody").addEventListener("click", (e) => {
+  const b = e.target.closest("button.opt");
+  if (b) pick(+b.dataset.i, b.dataset.f, b.dataset.v);
+});
 $("#btn-xlsx").addEventListener("click", exportXlsx);
 $("#btn-json").addEventListener("click", exportJson);
 $("#btn-csv").addEventListener("click", exportReview);
 $("#btn-clear").addEventListener("click", () => {
   state.drawings = [];
   state.rows = [];
+  state.sources.clear();
+  state.ai = null;
   render();
   status("Cleared.");
 });
+$("#btn-ai").addEventListener("click", runAI);
+$("#ai-on").addEventListener("change", () => {
+  store.set("bcd-ai-on", $("#ai-on").checked ? "1" : null);
+  showAI();
+});
+$("#ai-key").addEventListener("input", showAI);
+$("#ai-remember").addEventListener("change", () => {
+  if (!$("#ai-remember").checked) store.set("bcd-ai-key", null);
+});
+var savedKey = store.get("bcd-ai-key");
+if (savedKey) {
+  $("#ai-key").value = savedKey;
+  $("#ai-remember").checked = true;
+}
+if (store.get("bcd-ai-on")) $("#ai-on").checked = true;
 render();
 
 </script>
