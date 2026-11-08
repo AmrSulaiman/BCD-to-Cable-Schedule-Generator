@@ -132,6 +132,18 @@ It is an AI step inside a fixed pipeline, not an agent: the code decides what ha
 
 **Using it:** tick *AI cross-check* in step 02, paste a Gemini API key (free from [Google AI Studio](https://aistudio.google.com) → Get API key), and click *Run AI cross-check*. The key can be remembered in your browser; it is never stored in this repository or on the website.
 
+**If the AI is unavailable, the tool still works.** The rules engine never depends on the AI: reading drawings, editing and downloading the schedule work the same with the AI off, failing or out of free allowance. Safeguards:
+
+| Problem | What the tool does |
+|---|---|
+| Per-minute limit reached | Waits as long as Google asks (up to about a minute), then carries on |
+| A model's daily free limit used up | Switches to the next free Gemini model (e.g. Flash-Lite) |
+| No answer from Google | Gives up on that request after 90 seconds and tries again |
+| One sheet keeps failing | The other sheets are still checked; that sheet's rows are marked *Not checked*; **Retry what failed** asks again for only those sheets |
+| Google unreachable or key rejected | A plain message; the schedule stays as the rules engine read it |
+
+Requests are spaced a few seconds apart so a large drawing set does not hit the per-minute limit by itself.
+
 **Privacy:** the rules engine never sends drawings anywhere. The AI cross-check sends images of the drawings to Google. On Google's free tier, Google may use what is sent to improve its products.
 
 | File | Job |

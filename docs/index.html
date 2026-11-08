@@ -1076,72 +1076,119 @@ var toSheetScale = (x, y, width, height) => [Math.round(x / width * 1e3), Math.r
 // src/ai/gemini.js
 var BASE = "https://generativelanguage.googleapis.com/v1beta";
 var AIError = class extends Error {
-  constructor(message, { status: status2, retryable } = {}) {
+  constructor(message, { status: status2, retryable, quota, waitMs } = {}) {
     super(message);
     this.status = status2;
     this.retryable = !!retryable;
+    this.quota = !!quota;
+    this.waitMs = waitMs;
   }
 };
-async function pickModel(apiKey, fetchImpl = fetch) {
-  const res = await fetchImpl(`${BASE}/models?pageSize=200`, { headers: { "x-goog-api-key": apiKey } });
+var sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function listModels(apiKey, fetchImpl = fetch, timeoutMs = 3e4) {
+  const res = await timedFetch(fetchImpl, `${BASE}/models?pageSize=200`, { headers: { "x-goog-api-key": apiKey } }, timeoutMs);
   if (!res.ok) throw await toError(res);
   const { models = [] } = await res.json();
-  const ok = models.filter((m) => (m.supportedGenerationMethods || []).includes("generateContent")).map((m) => m.name.replace(/^models\//, "")).filter((n) => /^gemini-\d+(\.\d+)?-flash(-preview(-[\w-]+)?)?$/.test(n) && !/image|tts|audio|live|thinking/.test(n));
-  if (!ok.length) throw new AIError("No suitable Gemini Flash model is available for this key.");
+  const names = models.filter((m) => (m.supportedGenerationMethods || []).includes("generateContent")).map((m) => m.name.replace(/^models\//, "")).filter((n) => /^gemini-\d+(\.\d+)?-flash(-lite)?(-preview(-[\w-]+)?)?$/.test(n) && !/image|tts|audio|live|thinking/.test(n));
+  if (!names.length) throw new AIError("No suitable Gemini Flash model is available for this key.");
   const ver = (n) => parseFloat(n.match(/gemini-(\d+(\.\d+)?)/)[1]);
-  ok.sort((a, b) => ver(b) - ver(a) || /preview/.test(a) - /preview/.test(b));
-  return ok[0];
+  const lite = (n) => /-lite/.test(n) ? 1 : 0, prev = (n) => /preview/.test(n) ? 1 : 0;
+  return names.sort((a, b) => lite(a) - lite(b) || ver(b) - ver(a) || prev(a) - prev(b));
+}
+async function timedFetch(fetchImpl, url, opts, timeoutMs) {
+  const ctl = typeof AbortController !== "undefined" ? new AbortController() : null;
+  let timer;
+  const timeout = new Promise((_, rej) => {
+    timer = setTimeout(() => {
+      ctl?.abort();
+      rej(new AIError(`The AI service did not answer within ${Math.round(timeoutMs / 1e3)} seconds.`, { retryable: true }));
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([fetchImpl(url, { ...opts, signal: ctl?.signal }), timeout]);
+  } catch (e) {
+    if (e instanceof AIError) throw e;
+    throw new AIError(`Could not reach the AI service: ${e.message}`, { retryable: true });
+  } finally {
+    clearTimeout(timer);
+  }
 }
 async function toError(res) {
-  let msg = `${res.status}`;
+  let msg = `${res.status}`, details = [];
   try {
     const j = await res.json();
     msg = j.error?.message || msg;
+    details = j.error?.details || [];
   } catch {
   }
   if (res.status === 400 && /api key/i.test(msg)) return new AIError("The AI key was rejected. Check it was copied completely.", { status: 400 });
   if (res.status === 403) return new AIError(`The AI key is not allowed to use this service: ${msg}`, { status: 403 });
-  if (res.status === 429) return new AIError("The free AI limit was reached. Wait a minute and try again.", { status: 429, retryable: true });
+  if (res.status === 404) return new AIError(`This AI model is not available: ${msg}`, { status: 404, quota: true });
+  if (res.status === 429) {
+    const retry = details.find((d) => /RetryInfo/.test(d["@type"] || ""))?.retryDelay;
+    const waitMs = retry ? Math.ceil(parseFloat(retry) * 1e3) : null;
+    const daily = /per\s*day|PerDay|daily/i.test(msg + JSON.stringify(details));
+    if (daily) return new AIError("The free daily AI limit for this model is used up.", { status: 429, quota: true });
+    return new AIError("The free per-minute AI limit was reached.", { status: 429, retryable: true, waitMs });
+  }
   if (res.status >= 500) return new AIError(`The AI service had a problem (${res.status}).`, { status: res.status, retryable: true });
   return new AIError(`AI request failed: ${msg}`, { status: res.status });
 }
-var sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-function geminiProvider({ apiKey, model, fetchImpl = (...a) => fetch(...a) }) {
-  let chosen = model;
+function geminiProvider({ apiKey, model, fetchImpl = (...a) => fetch(...a), timeoutMs = 9e4, gapMs = 4e3, maxWaitMs = 65e3, onWait = () => {
+} }) {
+  let models = model ? [model] : null, current = 0, lastCall = 0;
   return {
     name: "Google Gemini",
     async model() {
-      return chosen || (chosen = await pickModel(apiKey, fetchImpl));
+      if (!models) models = await listModels(apiKey, fetchImpl, Math.min(timeoutMs, 3e4));
+      return models[current];
     },
     async generate({ system, text, images = [], schema }) {
-      const m = await this.model();
+      await this.model();
       const parts = [{ text }];
       for (const im of images) {
         parts.push({ text: `Image "${im.name}": shows x ${im.box[0]}\u2013${im.box[2]}, y ${im.box[1]}\u2013${im.box[3]} of the sheet.` });
         parts.push({ inline_data: { mime_type: im.mime, data: im.data } });
       }
-      const body = {
+      const body = JSON.stringify({
         systemInstruction: { parts: [{ text: system }] },
         contents: [{ role: "user", parts }],
         generationConfig: { temperature: 0, responseMimeType: "application/json", responseSchema: schema }
-      };
+      });
       let lastErr;
-      for (let attempt = 0; attempt < 4; attempt++) {
-        if (attempt) await sleep(2e3 * 2 ** (attempt - 1));
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const since = Date.now() - lastCall;
+        if (since < gapMs) await sleep(gapMs - since);
+        lastCall = Date.now();
+        const m = models[current];
         let res;
         try {
-          res = await fetchImpl(`${BASE}/models/${m}:generateContent`, {
+          res = await timedFetch(fetchImpl, `${BASE}/models/${m}:generateContent`, {
             method: "POST",
             headers: { "content-type": "application/json", "x-goog-api-key": apiKey },
-            body: JSON.stringify(body)
-          });
+            body
+          }, timeoutMs);
         } catch (e) {
-          lastErr = new AIError(`Could not reach the AI service: ${e.message}`, { retryable: true });
-          continue;
+          lastErr = e;
+          if (attempt < 2) {
+            await sleep(2e3 * 2 ** attempt);
+            continue;
+          }
+          break;
         }
         if (!res.ok) {
           lastErr = await toError(res);
-          if (lastErr.retryable) continue;
+          if (lastErr.quota && current < models.length - 1) {
+            current++;
+            onWait(`${lastErr.message} Switching to ${models[current]}\u2026`);
+            continue;
+          }
+          if (lastErr.retryable && attempt < 4) {
+            const wait = Math.min(lastErr.waitMs ?? 2e3 * 2 ** attempt, maxWaitMs);
+            if (lastErr.status === 429) onWait(`${lastErr.message} Waiting ${Math.round(wait / 1e3)} s\u2026`);
+            await sleep(wait);
+            continue;
+          }
           throw lastErr;
         }
         const j = await res.json();
@@ -1158,7 +1205,7 @@ function geminiProvider({ apiKey, model, fetchImpl = (...a) => fetch(...a) }) {
           continue;
         }
       }
-      throw lastErr;
+      throw lastErr || new AIError("The AI request failed.");
     }
   };
 }
@@ -1549,7 +1596,7 @@ async function crossCheck({ sheets, ruleRows, rules = DEFAULT_RULES, provider, o
     aiRows: [...aiRows.values()],
     log,
     raw,
-    model,
+    model: await provider.model(),
     provider: provider.name,
     summary: { agreed: count("agreed"), disputed: count("disputed"), unconfirmed: count("unconfirmed"), aiOnly: count("ai_only"), rulesOnly: count("rules_only"), notChecked: count("not_checked") }
   };
@@ -1561,6 +1608,19 @@ function recordingProvider(inner, store2 = {}) {
     store: store2,
     async generate(args) {
       const r = await inner.generate(args);
+      store2[args.tag] = { model: r.model, json: r.json };
+      return r;
+    }
+  };
+}
+function resumeProvider(store2, live) {
+  return {
+    name: live.name,
+    model: () => live.model(),
+    store: store2,
+    async generate(args) {
+      if (store2[args.tag]) return store2[args.tag];
+      const r = await live.generate(args);
       store2[args.tag] = { model: r.model, json: r.json };
       return r;
     }
@@ -1723,10 +1783,11 @@ function showAI() {
     ${s.aiOnly ? `<span><b class="warnc">${s.aiOnly}</b> found by AI only</span>` : ""}
     ${s.rulesOnly ? `<span><b class="warnc">${s.rulesOnly}</b> not reported by AI</span>` : ""}
     ${s.notChecked ? `<span><b class="badc">${s.notChecked}</b> not checked</span>` : ""}
+    ${state.ai.retryable ? `<button id="btn-ai-retry" class="ghost small" type="button">Retry what failed</button>` : ""}
     <span class="muted">${esc(state.ai.provider)} \xB7 ${esc(state.ai.model)}</span>
     ${state.ai.log.length ? `<details><summary>${state.ai.log.length} note${state.ai.log.length === 1 ? "" : "s"} from the check</summary><ul>${state.ai.log.map((l) => `<li>${esc(l)}</li>`).join("")}</ul></details>` : ""}` : "";
 }
-async function runAI() {
+async function runAI(retry = false) {
   const key = $("#ai-key").value.trim();
   if (!key) {
     status("Paste an AI key first.", "bad");
@@ -1737,19 +1798,23 @@ async function runAI() {
   const btn = $("#btn-ai");
   btn.disabled = true;
   btn.textContent = "Checking\u2026";
+  const files = state.drawings.map((d) => d.file).sort().join("|");
   try {
     const rules = rulesNow();
     const ruleRows = mergeDrawings(state.drawings, rules).rows;
-    const rec = recordingProvider(geminiProvider({ apiKey: key }));
-    const res = await crossCheck({ sheets: sheetsFor(), ruleRows, rules, provider: rec, onProgress: (m) => status(m + "\u2026") });
-    state.ai = { store: rec.store, model: res.model, provider: res.provider, summary: res.summary, log: res.log, raw: res.raw, files: state.drawings.map((d) => d.file).sort().join("|") };
+    const live = geminiProvider({ apiKey: key, onWait: (m) => status(m), ...globalThis.BCD_AI_OPTIONS || {} });
+    const prov = retry && state.ai?.files === files ? resumeProvider(state.ai.store, live) : recordingProvider(live);
+    const res = await crossCheck({ sheets: sheetsFor(), ruleRows, rules, provider: prov, onProgress: (m) => status(m + "\u2026") });
+    const failed = res.log.filter((l) => /failed/.test(l)).length;
+    state.ai = { store: prov.store, model: res.model, provider: res.provider, summary: res.summary, log: res.log, raw: res.raw, files, retryable: failed > 0 };
     state.rows = res.rows;
     render();
     const s = res.summary;
-    status(`AI cross-check done: ${s.agreed} agreed, ${s.disputed} disputed${s.notChecked ? `, ${s.notChecked} not checked` : ""}. Check the amber rows.`, s.disputed || s.notChecked ? "warn" : "good");
+    if (failed) status(`AI cross-check finished with problems: ${s.notChecked ? `${s.notChecked} rows not checked` : "some reviews failed"}. The rules engine's reading is unchanged for those rows. You can retry just what failed.`, "warn");
+    else status(`AI cross-check done: ${s.agreed} agreed, ${s.disputed} disputed. Check the amber rows.`, s.disputed ? "warn" : "good");
   } catch (e) {
     console.error(e);
-    status(`AI cross-check failed: ${e.message}. The schedule still shows the rules engine's reading.`, "bad");
+    status(`AI cross-check could not run: ${e.message} The schedule still shows the rules engine's reading, and you can download it as normal.`, "bad");
   } finally {
     btn.textContent = "Run AI cross-check";
     showAI();
@@ -1949,7 +2014,10 @@ $("#btn-clear").addEventListener("click", () => {
   render();
   status("Cleared.");
 });
-$("#btn-ai").addEventListener("click", runAI);
+$("#btn-ai").addEventListener("click", () => runAI(false));
+$("#ai-result").addEventListener("click", (e) => {
+  if (e.target.id === "btn-ai-retry") runAI(true);
+});
 $("#ai-on").addEventListener("change", () => {
   store.set("bcd-ai-on", $("#ai-on").checked ? "1" : null);
   showAI();

@@ -8,7 +8,7 @@ import { DEFAULT_RULES, fullName } from './rules.js';
 import { buildWorkbook } from './excel.js';
 import { renderPageForAI } from './ai/render.js';
 import { geminiProvider } from './ai/gemini.js';
-import { crossCheck, recordingProvider, replayProvider } from './ai/crosscheck.js';
+import { crossCheck, recordingProvider, replayProvider, resumeProvider } from './ai/crosscheck.js';
 
 pdfjs.GlobalWorkerOptions.workerSrc = 'PDFJS_WORKER_URL';
 
@@ -131,29 +131,35 @@ function showAI() {
     ${s.aiOnly ? `<span><b class="warnc">${s.aiOnly}</b> found by AI only</span>` : ''}
     ${s.rulesOnly ? `<span><b class="warnc">${s.rulesOnly}</b> not reported by AI</span>` : ''}
     ${s.notChecked ? `<span><b class="badc">${s.notChecked}</b> not checked</span>` : ''}
+    ${state.ai.retryable ? `<button id="btn-ai-retry" class="ghost small" type="button">Retry what failed</button>` : ''}
     <span class="muted">${esc(state.ai.provider)} · ${esc(state.ai.model)}</span>
     ${state.ai.log.length ? `<details><summary>${state.ai.log.length} note${state.ai.log.length === 1 ? '' : 's'} from the check</summary><ul>${state.ai.log.map(l => `<li>${esc(l)}</li>`).join('')}</ul></details>` : ''}` : '';
 }
 
-async function runAI() {
+// retry = only ask again for what failed last time (answers already received are re-used)
+async function runAI(retry = false) {
   const key = $('#ai-key').value.trim();
   if (!key) { status('Paste an AI key first.', 'bad'); return; }
   if ($('#ai-remember').checked) store.set('bcd-ai-key', key); else store.set('bcd-ai-key', null);
   const btn = $('#btn-ai');
   btn.disabled = true; btn.textContent = 'Checking…';
+  const files = state.drawings.map(d => d.file).sort().join('|');
   try {
     const rules = rulesNow();
     const ruleRows = mergeDrawings(state.drawings, rules).rows;
-    const rec = recordingProvider(geminiProvider({ apiKey: key }));
-    const res = await crossCheck({ sheets: sheetsFor(), ruleRows, rules, provider: rec, onProgress: m => status(m + '…') });
-    state.ai = { store: rec.store, model: res.model, provider: res.provider, summary: res.summary, log: res.log, raw: res.raw, files: state.drawings.map(d => d.file).sort().join('|') };
+    const live = geminiProvider({ apiKey: key, onWait: m => status(m), ...(globalThis.BCD_AI_OPTIONS || {}) });
+    const prov = retry && state.ai?.files === files ? resumeProvider(state.ai.store, live) : recordingProvider(live);
+    const res = await crossCheck({ sheets: sheetsFor(), ruleRows, rules, provider: prov, onProgress: m => status(m + '…') });
+    const failed = res.log.filter(l => /failed/.test(l)).length;
+    state.ai = { store: prov.store, model: res.model, provider: res.provider, summary: res.summary, log: res.log, raw: res.raw, files, retryable: failed > 0 };
     state.rows = res.rows;
     render();
     const s = res.summary;
-    status(`AI cross-check done: ${s.agreed} agreed, ${s.disputed} disputed${s.notChecked ? `, ${s.notChecked} not checked` : ''}. Check the amber rows.`, s.disputed || s.notChecked ? 'warn' : 'good');
+    if (failed) status(`AI cross-check finished with problems: ${s.notChecked ? `${s.notChecked} rows not checked` : 'some reviews failed'}. The rules engine's reading is unchanged for those rows. You can retry just what failed.`, 'warn');
+    else status(`AI cross-check done: ${s.agreed} agreed, ${s.disputed} disputed. Check the amber rows.`, s.disputed ? 'warn' : 'good');
   } catch (e) {
     console.error(e);
-    status(`AI cross-check failed: ${e.message}. The schedule still shows the rules engine's reading.`, 'bad');
+    status(`AI cross-check could not run: ${e.message} The schedule still shows the rules engine's reading, and you can download it as normal.`, 'bad');
   } finally {
     btn.textContent = 'Run AI cross-check';
     showAI();
@@ -314,7 +320,8 @@ $('#btn-xlsx').addEventListener('click', exportXlsx);
 $('#btn-json').addEventListener('click', exportJson);
 $('#btn-csv').addEventListener('click', exportReview);
 $('#btn-clear').addEventListener('click', () => { state.drawings = []; state.rows = []; state.sources.clear(); state.ai = null; render(); status('Cleared.'); });
-$('#btn-ai').addEventListener('click', runAI);
+$('#btn-ai').addEventListener('click', () => runAI(false));
+$('#ai-result').addEventListener('click', e => { if (e.target.id === 'btn-ai-retry') runAI(true); });
 $('#ai-on').addEventListener('change', () => { store.set('bcd-ai-on', $('#ai-on').checked ? '1' : null); showAI(); });
 $('#ai-key').addEventListener('input', showAI);
 $('#ai-remember').addEventListener('change', () => { if (!$('#ai-remember').checked) store.set('bcd-ai-key', null); });

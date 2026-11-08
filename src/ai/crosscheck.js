@@ -253,7 +253,7 @@ export async function crossCheck({ sheets, ruleRows, rules = DEFAULT_RULES, prov
   out.sort(rules.sortRows);
   const count = st => out.filter(r => r.check?.status === st).length;
   return {
-    rows: out, aiRows: [...aiRows.values()], log, raw, model, provider: provider.name,
+    rows: out, aiRows: [...aiRows.values()], log, raw, model: await provider.model(), provider: provider.name,
     summary: { agreed: count('agreed'), disputed: count('disputed'), unconfirmed: count('unconfirmed'), aiOnly: count('ai_only'), rulesOnly: count('rules_only'), notChecked: count('not_checked') },
   };
 }
@@ -264,6 +264,19 @@ export function recordingProvider(inner, store = {}) {
   return {
     name: inner.name, model: () => inner.model(), store,
     async generate(args) { const r = await inner.generate(args); store[args.tag] = { model: r.model, json: r.json }; return r; },
+  };
+}
+// Re-uses answers already received and only asks the AI for the rest, e.g. to retry
+// just the sheets that failed without spending the free limit on the others again.
+export function resumeProvider(store, live) {
+  return {
+    name: live.name, model: () => live.model(), store,
+    async generate(args) {
+      if (store[args.tag]) return store[args.tag];
+      const r = await live.generate(args);
+      store[args.tag] = { model: r.model, json: r.json };
+      return r;
+    },
   };
 }
 export function replayProvider(store, name = 'Saved AI answers') {
