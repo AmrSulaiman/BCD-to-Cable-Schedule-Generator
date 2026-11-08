@@ -108,7 +108,7 @@ export function geminiProvider({ apiKey, model, fetchImpl = (...a) => fetch(...a
       const left = () => deadline - Date.now();
       // wait in small steps so Stop works during waits
       const pause = async ms => { const end = Date.now() + Math.min(ms, Math.max(0, left())); while (Date.now() < end) { stopCheck(); await sleep(Math.min(500, end - Date.now())); } };
-      let lastErr, timeouts = 0, sentThinking = thinkingOk;
+      let lastErr, timeouts = 0, netErrs = 0, sentThinking = thinkingOk;
       for (let attempt = 0; attempt < 6; attempt++) {
         stopCheck();
         if (left() < 5000) break;
@@ -126,6 +126,7 @@ export function geminiProvider({ apiKey, model, fetchImpl = (...a) => fetch(...a
           if (e.stopped) throw e;
           lastErr = e;
           if (/did not answer/.test(e.message) && ++timeouts >= 2) break;   // two slow answers in a row: give up on this one
+          if (/Could not reach/.test(e.message) && ++netErrs >= 3) break;     // no connection: retrying will not help
           onWait(`${e.message} Trying again…`);
           await pause(2000 * 2 ** Math.min(attempt, 3)); continue;
         }
@@ -155,7 +156,7 @@ export function geminiProvider({ apiKey, model, fetchImpl = (...a) => fetch(...a
         try { return { json: JSON.parse(out), model: m, usage: j.usageMetadata }; }
         catch { lastErr = new AIError('The AI answer was not valid JSON.', { retryable: true }); continue; }
       }
-      if (lastErr && !/gave up/.test(lastErr.message)) lastErr.message += ' Gave up on this sheet for now.';
+      if (lastErr && !/gave up/.test(lastErr.message)) lastErr.message += ' Gave up on this request for now.';
       throw lastErr || new AIError('The AI request failed.');
     },
   };

@@ -118,19 +118,38 @@ PDF ──► pdfread.js ──► engine.js: extractDrawing ──► engine.js
 
 ## AI cross-check (optional)
 
-The rules engine reads the drawings exactly but only understands drafting styles it has rules for. The optional AI cross-check adds a second, independent reading by an AI model (Google Gemini, free tier), so new drawing styles and scanned sheets are still covered without anyone writing new rules.
+The rules engine reads the drawings exactly, and it knows when it is unsure. The optional AI check (Google Gemini, free tier) is used **only where the rules engine is unsure**, plus a few spot checks, and it looks at a close-up of just that part of the drawing.
 
 **How it works**
 
-1. **Read.** Each sheet is sent to the AI as images (an overview plus close-up tiles, so small text stays readable) with the list of cable references the rules engine found, but **not** the rules engine's answers. The AI reports each cable's ends, cores & size, type and band.
-2. **Check.** The AI's answer is checked by code before it is used: fixed answer format, valid references only, and any cable the rules engine did not find must appear in the drawing's own text, or it is discarded.
-3. **Compare.** The AI's reading goes through the same merge and naming rules as the rules engine, then the two are compared field by field.
-4. **Review.** Only the fields where they disagree go back to the AI, with both candidate values and the drawing, to say which one the drawing shows and why.
-5. **Result.** Every row gets a status: **Agreed**, **Disputed**, **Partly confirmed**, **AI only**, **Rules only** or **Not checked**. Disputed fields show both values with the AI's reason; one click picks the right one. Nothing the AI decides is applied without being marked for checking.
+1. **Score every reading.** While tracing a cable, the rules engine records how it found each end and how clear-cut that was. A reading is *unsure* when:
+   - the label is joined to its cable by a leader arrow;
+   - the name at an end was simply the nearest text, and it is far from the line end (over 150 pt), off to the side, or there is another label almost as close;
+   - nothing is drawn at an end, so the name came from the board way's DESCRIPTION;
+   - nothing was found at an end of the line;
+   - the size or type text was not found.
 
-It is an AI step inside a fixed pipeline, not an agent: the code decides what happens, the AI only reads.
+   It also saves the **close-up area** for each cable: the label and its specification text, the traced line, both ends and (for a board end) its header-strip column, plus a margin.
+2. **Sort the rows.** Each row goes into one of four groups:
 
-**Using it:** tick *AI cross-check* in step 02 and paste a Gemini API key (free from [Google AI Studio](https://aistudio.google.com) → Get API key). The key is remembered in your browser (never in this repository or on the website), and from then on the AI check starts by itself whenever drawings are added; untick *Run the AI check automatically* to start it with the button instead. The schedule is ready straight away; the AI results are added when they arrive (usually 1–3 minutes for 4 sheets, with a timer and a Stop button).
+   | Group | What it means | AI? |
+   |---|---|---|
+   | Unsure reading | The tool may have misread the drawing | Close-up sent to the AI |
+   | Needs a person | Information missing (e.g. a referenced drawing not uploaded, an incomer with nothing drawn) or drawings contradict each other | No: a picture cannot settle it |
+   | Spot check | 2 sure readings per sheet, picked the same way every time | Close-up sent to the AI |
+   | Sure | Clear-cut reading | No |
+
+   The page says how many of each before the check runs.
+3. **Ask.** Close-ups go to the AI in small batches (one sheet, up to 5 cables per request, 3 requests at a time), each with the exact words the PDF prints in that area so names are spelled right. The AI is **not** told what the rules engine read, so its reading is independent. If the cable's line runs off the edge of the close-up, it is asked once more with a wider area.
+4. **Check and compare.** The answer is checked by code (right cable, right image, known kinds of end). The AI's reading replaces the rules engine's reading of that cable on that sheet and goes through the same merge and naming rules, and the two rows are compared field by field.
+5. **Escalate.** If a spot check disagrees, the rules engine has a blind spot on that sheet, so every other cable on that sheet is checked too.
+6. **Result.** Every row gets a status: **Confirmed**, **Disputed** (both readings shown, one click picks the right one), **AI filled in**, **Needs a person**, **Not needed** or **Not checked**. Nothing the AI says is applied without being marked; a confirmation removes the "please check" flag it was sent for and leaves a note.
+
+For the two test projects this sends about 14 close-ups in 5 requests per project, instead of every sheet in full. Scanned sheets (no text layer) are the exception: the rules engine cannot read them, so the AI reads those sheets whole (overview plus tiles) as before.
+
+It is an AI step inside a fixed pipeline, not an agent: the code decides what to ask and what to do with the answer; the AI only reads.
+
+**Using it:** tick *AI cross-check* in step 02 and paste a Gemini API key (free from [Google AI Studio](https://aistudio.google.com) → Get API key). The key is remembered in your browser (never in this repository or on the website), and from then on the AI check starts by itself whenever drawings are added; untick *Run the AI check automatically* to start it with the button instead. The schedule is ready straight away; the AI results are added when they arrive, usually within a minute.
 
 **If the AI is unavailable, the tool still works.** The rules engine never depends on the AI: reading drawings, editing and downloading the schedule work the same with the AI off, failing or out of free allowance. Safeguards:
 
@@ -138,25 +157,26 @@ It is an AI step inside a fixed pipeline, not an agent: the code decides what ha
 |---|---|
 | Per-minute limit reached | Waits as long as Google asks (up to about a minute), then carries on |
 | A model's daily free limit used up | Switches to the next free Gemini model (e.g. Flash-Lite) |
-| No answer from Google | Gives up on that request after 90 seconds and tries again |
-| One sheet keeps failing | The other sheets are still checked; that sheet's rows are marked *Not checked*; **Retry what failed** asks again for only those sheets |
+| No answer from Google | Gives up on that request after 50 seconds and tries again (close-ups are small, so answers normally take seconds) |
+| No connection | Stops retrying a request after 3 failed attempts; if the first 2 requests both fail, the rest are not sent (about 15 seconds) |
+| One request keeps failing | The others still run; its rows are marked *Not checked*; **Retry what failed** asks again for only those |
 | Google busy (503) | Shows "Google's AI service is busy", waits and tries again |
-| A sheet takes too long | Each sheet gets about 3 minutes in total; then it is marked *Not checked* and can be retried |
+| An answer that makes no sense | Ignored; the row keeps the rules engine's reading |
 | You press **Stop** | Stops at once; rows not yet checked are marked *Not checked* |
-| Google unreachable or key rejected | A plain message; the schedule stays as the rules engine read it |
+| Key rejected | A plain message; the schedule stays as the rules engine read it |
 
-Two sheets are read at a time, requests are spaced a few seconds apart so a large drawing set does not hit the per-minute limit by itself, images are sent as compressed JPEGs, and the AI is asked to keep its internal "thinking" short, which makes answers much faster.
-
-**Privacy:** the rules engine never sends drawings anywhere. The AI cross-check sends images of the drawings to Google. On Google's free tier, Google may use what is sent to improve its products.
+**Privacy:** the rules engine never sends drawings anywhere. The AI check sends close-up images of parts of the drawings to Google. On Google's free tier, Google may use what is sent to improve its products.
 
 | File | Job |
 |---|---|
-| `src/ai/render.js` | Turns a PDF page into an overview image and close-up tiles of the diagram area |
-| `src/ai/prompt.js` | The fixed instructions and answer formats for the AI (`PROMPT_VERSION`) |
+| `src/engine.js` | Records how sure each reading is, the close-up area, and what kind each flag is (`classifyFlag`) |
+| `src/ai/targeted.js` | Plan → close-ups → ask → check → compare → escalate → status |
+| `src/ai/render.js` | Renders a close-up of one area (`renderRegion`), or a whole sheet as overview + tiles for scanned sheets |
+| `src/ai/prompt.js` | The fixed instructions and answer formats for the AI (`CHECK_VERSION` for close-ups) |
 | `src/ai/gemini.js` | The only file that talks to Google; picks the newest free Flash model, retries on limits |
-| `src/ai/crosscheck.js` | Read → check → compare → review → status, plus saving/replaying answers for tests |
+| `src/ai/crosscheck.js` | Whole-sheet reading for scanned sheets, plus saving/replaying answers |
 
-**Tests:** a project's `ai-answers.json` holds the AI's saved answers. `npm test` replays them (free, no key needed) and reports *Rules alone*, *AI alone* and *Rules + AI*. To ask the AI again: `GEMINI_API_KEY=... node test/run-all.mjs --ai-live <project>`.
+**Tests:** `test/targeted.mjs` (part of `npm test`) runs the AI check with pretend AIs, no key needed: one that agrees, one that always fails, one that answers nonsense, one whose spot check disagrees (the sheet must be escalated), and one that answers from the correct schedule (shows which wrong rows the AI would catch). `node tools/crops.mjs <project folder> <output folder>` saves the close-ups that would be sent, to look at them.
 
 ## Accuracy tests
 

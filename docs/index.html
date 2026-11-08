@@ -106,6 +106,7 @@ tr.flagged td { background: var(--row-flag); }
 tr.flagged .dot { background: var(--warn); }
 .flags { min-width: 260px; }
 .chip { display: block; font-size: 0.8rem; color: var(--warn); line-height: 1.35; margin-bottom: 3px; }
+.chip.note { color: var(--muted); }
 .sheets { white-space: nowrap; }
 .ai { border-top: 1px solid var(--rule); padding-top: 12px; display: grid; gap: 10px; }
 .ai .switch { display: flex; gap: 8px; align-items: flex-start; font-size: 0.9rem; cursor: pointer; }
@@ -121,7 +122,9 @@ tr.flagged .dot { background: var(--warn); }
 .ai-result ul { margin: 4px 0 0; padding-left: 18px; }
 .ok { color: var(--good); } .warnc { color: var(--warn); } .badc { color: var(--bad); }
 .badge { display: inline-block; font-size: 0.74rem; font-weight: 600; padding: 2px 7px; border: 1px solid var(--rule); white-space: nowrap; }
-.badge[data-st=agreed] { color: var(--good); border-color: var(--good); }
+.badge[data-st=agreed], .badge[data-st=confirmed], .badge[data-st=resolved] { color: var(--good); border-color: var(--good); }
+.badge[data-st=filled], .badge[data-st=person] { color: var(--warn); border-color: var(--warn); background: var(--warn-bg); }
+.badge[data-st=not_needed] { color: var(--muted); }
 .badge[data-st=disputed], .badge[data-st=unconfirmed], .badge[data-st=ai_only], .badge[data-st=rules_only] { color: var(--warn); border-color: var(--warn); background: var(--warn-bg); }
 .badge[data-st=not_checked] { color: var(--bad); border-color: var(--bad); }
 td.disputed { box-shadow: inset 3px 0 0 var(--warn); }
@@ -177,15 +180,16 @@ button.opt.rec { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--ac
         <p class="muted" style="margin:0;font-size:.82rem">Voltage comes from the band: B1 = 24V, B2 and B1&amp;B2 = 400V. Length, CPC type, installation method and comments are left blank.</p>
       </div>
       <div class="ai">
-        <label class="switch" for="ai-on"><input id="ai-on" type="checkbox"> <span><b>AI cross-check</b> <span class="beta">beta</span> (optional): a second, independent reading of the drawings by Google Gemini</span></label>
+        <label class="switch" for="ai-on"><input id="ai-on" type="checkbox"> <span><b>AI cross-check</b> <span class="beta">beta</span> (optional): Google Gemini takes a close look at the readings the tool is unsure of</span></label>
         <div id="ai-panel" hidden>
-          <p class="notice">When you run it, images of the drawings are sent to Google's Gemini service. On Google's free tier, Google may use what you send to improve its products. The rules engine's reading never leaves this computer.</p>
+          <p class="notice">When it runs, close-up images of parts of the drawings are sent to Google's Gemini service. On Google's free tier, Google may use what you send to improve its products. The rules engine's reading never leaves this computer.</p>
           <label for="ai-key">Gemini API key <span class="muted">(free from aistudio.google.com → Get API key)</span>
             <input id="ai-key" type="password" autocomplete="off" spellcheck="false" placeholder="Paste your key"></label>
           <label class="inline" for="ai-remember"><input id="ai-remember" type="checkbox" checked> Remember the key in this browser</label>
           <label class="inline" for="ai-auto"><input id="ai-auto" type="checkbox" checked> Run the AI check automatically when drawings are added</label>
           <div class="actions"><button id="btn-ai" type="button" disabled>Run AI cross-check</button><button id="btn-ai-stop" class="ghost" type="button" hidden>Stop</button></div>
-          <p class="muted" style="margin:0;font-size:.8rem">Usually takes 1–3 minutes for 4 sheets. Progress and a timer are shown below the download buttons. The schedule is ready to use straight away; the AI results are added when they arrive.</p>
+          <p id="ai-plan" class="muted" style="margin:0;font-size:.8rem"></p>
+          <p class="muted" style="margin:0;font-size:.8rem">Only the unsure readings plus a few spot checks are sent, so it usually takes well under a minute. If a spot check disagrees, the rest of that sheet is checked too. The schedule is ready to use straight away; the AI results are added when they arrive.</p>
           <div id="ai-result" class="ai-result"></div>
         </div>
       </div>
@@ -701,7 +705,10 @@ function extractDrawing(geom, fileName = "", rules = DEFAULT_RULES) {
   const nodeAt = (end, path) => {
     const { x, y, dx, dy } = end;
     const sp = stripAt(x, y, 30);
-    if (sp) return { kind: "panel", name: sp.name, way: sp.column(x).description };
+    if (sp) {
+      const col = sp.column(x);
+      return { kind: "panel", name: sp.name, way: col.description, how: "strip", bbox: [col.x0, sp.y0, col.x1, sp.y1] };
+    }
     let boxHit = null;
     for (const r of rects.filter((r2) => r2.edges.some((e) => ptSegDist(x, y, e) < 2))) {
       const inner = dTexts.filter((t) => inside(t.cx, t.cy, r) && !used.has(t)).sort((a, b) => a.cy - b.cy || a.x0 - b.x0);
@@ -713,10 +720,13 @@ function extractDrawing(geom, fileName = "", rules = DEFAULT_RULES) {
     if (boxHit) {
       const { r, inner, words } = boxHit;
       const sp2 = strips.find((st) => r.y0 >= st.y1 - 5 && r.y0 - st.y1 < 30 && r.x0 > st.x0 && r.x1 < st.x1);
-      if (sp2) return { kind: "panel", name: sp2.name, way: sp2.column((r.x0 + r.x1) / 2).description };
-      return { kind: "box", name: words.join(" "), box: r, first: inner.find((t) => !NOISE_RE.test(t.str)) };
+      if (sp2) {
+        const col = sp2.column((r.x0 + r.x1) / 2);
+        return { kind: "panel", name: sp2.name, way: col.description, how: "strip", bbox: [col.x0, sp2.y0, col.x1, r.y1] };
+      }
+      return { kind: "box", name: words.join(" "), box: r, first: inner.find((t) => !NOISE_RE.test(t.str)), how: "box", bbox: [r.x0, r.y0, r.x1, r.y1] };
     }
-    let best = null, bestScore = Infinity;
+    let best = null, bestScore = Infinity, second = Infinity, bestD = 0, bestLat = 0;
     for (const b of blocks) {
       const d = boxDist(x, y, b);
       const corners = [[b.x0, b.y0], [b.x1, b.y0], [b.x0, b.y1], [b.x1, b.y1]];
@@ -727,26 +737,57 @@ function extractDrawing(geom, fileName = "", rules = DEFAULT_RULES) {
       if (!ok) continue;
       const score = d + lateral * 1.5 + (along > 0 ? 0 : 30);
       if (score < bestScore) {
+        second = bestScore;
         bestScore = score;
         best = b;
-      }
+        bestD = d;
+        bestLat = lateral;
+      } else if (score < second) second = score;
     }
     if (best) {
+      const how = { how: "text", dist: Math.round(bestD), lateral: Math.round(bestLat), margin: isFinite(second) ? Math.round(second - bestScore) : 999, bbox: [best.x0, best.y0, best.x1, best.y1] };
       const raw = best.lines.filter((w) => !NOISE_RE.test(w));
       const joined = raw.join(" ");
       if (/^(FROM|TO|SEE)\s+DRAWING/i.test(joined)) {
         const num = (raw.slice(1).join("").replace(/\s+/g, "").match(DWG_RE) || [""])[0];
         const note = (joined.match(/\(([^)]*)\)\s*$/) || ["", ""])[1];
         const verb = joined.match(/^(FROM|TO|SEE)/i)[1].toUpperCase();
-        return { kind: "offsheet", verb, drawing: num, note, name: "", text: joined, block: best };
+        return { kind: "offsheet", verb, drawing: num, note, name: "", text: joined, block: best, ...how };
       }
-      if (/^FROM\s+DNO$/i.test(joined) || /^DNO\b/i.test(joined)) return { kind: "dno", name: "DNO", block: best };
+      if (/^FROM\s+DNO$/i.test(joined) || /^DNO\b/i.test(joined)) return { kind: "dno", name: "DNO", block: best, ...how };
       const sp3 = /CONTROLLER/i.test(joined) && strips.find((st) => best.y0 - st.y1 < 40 && best.y0 >= st.y1 - 5 && best.x0 > st.x0 && best.x1 < st.x1);
-      if (sp3) return { kind: "panel", name: sp3.name, way: sp3.column((best.x0 + best.x1) / 2).description };
+      if (sp3) {
+        const col = sp3.column((best.x0 + best.x1) / 2);
+        return { kind: "panel", name: sp3.name, way: col.description, how: "strip", bbox: [col.x0, sp3.y0, col.x1, best.y1] };
+      }
       const name = raw.filter((w) => !TAG_RE.test(w)).join(" ");
-      return { kind: "device", name, block: best, first: best.texts.find((t) => !NOISE_RE.test(t.str)) };
+      return { kind: "device", name, block: best, first: best.texts.find((t) => !NOISE_RE.test(t.str)), ...how };
     }
-    return { kind: "open", name: "", at: [Math.round(x), Math.round(y)] };
+    return { kind: "open", name: "", at: [Math.round(x), Math.round(y)], how: "open" };
+  };
+  const regionFor = (boxes, points) => {
+    const xs = [], ys = [];
+    for (const b of boxes) {
+      xs.push(b[0], b[2]);
+      ys.push(b[1], b[3]);
+    }
+    for (const p of points) {
+      xs.push(p[0]);
+      ys.push(p[1]);
+    }
+    let x0 = Math.min(...xs) - 30, x1 = Math.max(...xs) + 30, y0 = Math.min(...ys) - 30, y1 = Math.max(...ys) + 30;
+    const minW = 240, minH = 240;
+    if (x1 - x0 < minW) {
+      const c = (x0 + x1) / 2;
+      x0 = c - minW / 2;
+      x1 = c + minW / 2;
+    }
+    if (y1 - y0 < minH) {
+      const c = (y0 + y1) / 2;
+      y0 = c - minH / 2;
+      y1 = c + minH / 2;
+    }
+    return [Math.max(0, x0), Math.max(0, y0), Math.min(geom.width, x1), Math.min(geom.height, y1)].map(Math.round);
   };
   const finishNode = (n) => {
     if (n.first) {
@@ -793,6 +834,7 @@ function extractDrawing(geom, fileName = "", rules = DEFAULT_RULES) {
       if (out.length >= 3) break;
     }
     out.forEach((u) => used.add(u));
+    L.specBoxes = out.map((u) => [u.x0, u.y0, u.x1, u.y1]);
     return out.map((u) => u.str).join(" ");
   };
   const resolved = [];
@@ -805,8 +847,11 @@ function extractDrawing(geom, fileName = "", rules = DEFAULT_RULES) {
   for (const L of labels) {
     const rec = { ref: L.ref, band: L.band, ...parseSpec(L.specRaw), specRaw: L.specRaw, ends: [], flags: [], at: [Math.round(L.t.cx), Math.round(L.t.cy)] };
     let line = L.line;
+    const lb = [L.t.x0, L.t.y0, L.t.x1, L.t.y1];
     if (!line) {
       rec.flags.push("No cable line found next to label");
+      rec.uncertain = [{ code: "no-line", text: "no cable line was found next to the label" }];
+      rec.region = regionFor([lb], []);
       resolved.push(rec);
       continue;
     }
@@ -838,8 +883,10 @@ function extractDrawing(geom, fileName = "", rules = DEFAULT_RULES) {
         A = walk(line, false);
         B = walk(line, true);
         rec.flags.push("Label attached by leader arrow \u2014 check it points at the right cable");
+        rec.leader = true;
       }
     }
+    const pathSegs = [.../* @__PURE__ */ new Set([...A.path, ...B.path])];
     let nA = nodeAt(A, A.path), nB = nodeAt(B, B.path);
     nA.pos = [Math.round(A.x), Math.round(A.y)];
     nB.pos = [Math.round(B.x), Math.round(B.y)];
@@ -853,6 +900,21 @@ function extractDrawing(geom, fileName = "", rules = DEFAULT_RULES) {
       }
     }
     rec.ends = [nA, nB];
+    const why = [];
+    if (rec.leader) why.push({ code: "leader", text: "the label is joined to its cable by a leader arrow" });
+    for (const [i, n] of rec.ends.entries()) {
+      const which = i === 0 ? "one end" : "the other end";
+      if (n.fromColumn) why.push({ code: "column", end: i, text: `nothing was found at ${which}, so the name was taken from the board way description` });
+      else if (n.how === "text" && (n.dist > 150 || n.lateral > 15 || n.margin < 25))
+        why.push({ code: "loose", end: i, text: `the name at ${which} ("${n.name || n.text || ""}") was the nearest text, ${n.margin < 25 ? "with another label almost as close" : n.dist > 150 ? `${n.dist} pt away from the line end` : "off to the side of the line"}` });
+      else if (n.kind === "open" && !(rec.ends[1 - i].kind === "panel" && /INCOMER|\bFROM\b/i.test(rec.ends[1 - i].way || "")))
+        why.push({ code: "open", end: i, text: `nothing was found at ${which} of the line` });
+    }
+    if (!rec.size || !rec.type) why.push({ code: "spec", text: "the cable size or type text was not found next to the label" });
+    rec.uncertain = why;
+    const boxes = [[lb[0] - 50, lb[1] - 50, lb[2] + 50, lb[3] + 50], ...L.specBoxes || [], ...rec.ends.map((n) => n.bbox).filter(Boolean)];
+    for (const sg of pathSegs) boxes.push([Math.min(sg.x1, sg.x2), Math.min(sg.y1, sg.y2), Math.max(sg.x1, sg.x2), Math.max(sg.y1, sg.y2)]);
+    rec.region = regionFor(boxes, rec.ends.map((n) => n.pos).filter(Boolean));
     resolved.push(rec);
   }
   const pts = [];
@@ -877,6 +939,12 @@ function extractDrawing(geom, fileName = "", rules = DEFAULT_RULES) {
   };
 }
 var RANK = (n) => n.kind === "dno" ? 0 : n.kind === "panel" ? /INCOMER|\bFROM\b/i.test(n.way || "") ? 4 : 0 : n.kind === "offsheet" ? 1 : n.kind === "box" ? 2 : 3;
+function classifyFlag(f) {
+  if (/differs between drawings|disagree|More than two ends|normally .*drawing says/i.test(f)) return "conflict";
+  if (/not uploaded|Incoming supply|No voltage band/i.test(f)) return "missing";
+  if (/assumed .* from prefix/i.test(f)) return "note";
+  return "reading";
+}
 function mergeDrawings(drawings, rules = DEFAULT_RULES) {
   const byClient = /* @__PURE__ */ new Map();
   for (const d of drawings) if (d.drawing.clientNumber) byClient.set(d.drawing.clientNumber, d);
@@ -992,8 +1060,14 @@ function mergeDrawings(drawings, rules = DEFAULT_RULES) {
       install: "",
       comments: "",
       sheets: [...new Set(inst.map((i) => sheetOf(i.d)))],
-      flags: [...new Set(flags)]
+      flags: [...new Set(flags)],
+      // where each sheet drew this cable, and what (if anything) the reading is unsure of
+      views: inst.map((i) => ({ sheet: sheetOf(i.d), file: i.d.file, region: i.c.region, uncertain: i.c.uncertain || [] }))
     });
+    const row = rows[rows.length - 1];
+    row.flagKinds = row.flags.map(classifyFlag);
+    row.doubts = row.views.flatMap((v) => v.uncertain.map((u) => ({ ...u, sheet: v.sheet })));
+    row.confidence = row.doubts.length ? "low" : "high";
   }
   rows.sort(rules.sortRows);
   return { rows };
@@ -1075,6 +1149,19 @@ async function renderPageForAI(page, { makeCanvas, encode, area, mime = "image/p
   return { width: base.width, height: base.height, images };
 }
 var toSheetScale = (x, y, width, height) => [Math.round(x / width * 1e3), Math.round(y / height * 1e3)];
+async function renderRegion(page, region, { makeCanvas, encode, maxPx = 1400, mime = "image/jpeg" }) {
+  const [x0, y0, x1, y1] = region;
+  const w = x1 - x0, h = y1 - y0;
+  const scale = Math.min(maxPx / Math.max(w, h), 6);
+  const vp = page.getViewport({ scale, offsetX: -x0 * scale, offsetY: -y0 * scale });
+  const W = Math.max(1, Math.round(w * scale)), H = Math.max(1, Math.round(h * scale));
+  const c = makeCanvas(W, H);
+  const ctx = c.getContext("2d");
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, W, H);
+  await page.render({ canvasContext: ctx, viewport: vp, background: "rgb(255,255,255)" }).promise;
+  return { mime, data: await encode(c), width: W, height: H };
+}
 
 // src/ai/gemini.js
 var BASE = "https://generativelanguage.googleapis.com/v1beta";
@@ -1184,7 +1271,7 @@ function geminiProvider({ apiKey, model, fetchImpl = (...a) => fetch(...a), time
           await sleep(Math.min(500, end - Date.now()));
         }
       };
-      let lastErr, timeouts = 0, sentThinking = thinkingOk;
+      let lastErr, timeouts = 0, netErrs = 0, sentThinking = thinkingOk;
       for (let attempt = 0; attempt < 6; attempt++) {
         stopCheck();
         if (left() < 5e3) break;
@@ -1204,6 +1291,7 @@ function geminiProvider({ apiKey, model, fetchImpl = (...a) => fetch(...a), time
           if (e.stopped) throw e;
           lastErr = e;
           if (/did not answer/.test(e.message) && ++timeouts >= 2) break;
+          if (/Could not reach/.test(e.message) && ++netErrs >= 3) break;
           onWait(`${e.message} Trying again\u2026`);
           await pause(2e3 * 2 ** Math.min(attempt, 3));
           continue;
@@ -1242,7 +1330,7 @@ function geminiProvider({ apiKey, model, fetchImpl = (...a) => fetch(...a), time
           continue;
         }
       }
-      if (lastErr && !/gave up/.test(lastErr.message)) lastErr.message += " Gave up on this sheet for now.";
+      if (lastErr && !/gave up/.test(lastErr.message)) lastErr.message += " Gave up on this request for now.";
       throw lastErr || new AIError("The AI request failed.");
     }
   };
@@ -1372,6 +1460,69 @@ function reviewUserText(sheet, items) {
     lines.push(`    B: ${it.b}`);
   }
   lines.push("", "The images follow: first an overview, then close-up tiles.");
+  return lines.join("\n");
+}
+var CHECK_VERSION = "check-v1";
+var CHECK_SYSTEM = `You are an experienced electrical engineer reading close-up views of a block cable diagram (BCD) to check a cable schedule. You read literally and never guess.
+
+WHAT YOU ARE SHOWN
+Each image is a close-up of one part of a large drawing sheet, cut out around one cable. You are told which cable reference to look at, roughly where its label is, and the exact words printed in that area (taken from the PDF, so their spelling is reliable even if the image is blurry).
+
+HOW THESE DRAWINGS WORK
+- A cable is a line. Beside it is its label: a reference such as L25NA1001, usually followed by a voltage band, (B1), (B2) or (B1&B2). On the other side of the line is its specification, e.g. "4c x 2.5mm\xB2 XLPE/SWA BS5467": cores and size, then cable type.
+- Some labels are horizontal and joined to their cable by a leader line ending in an arrow; the cable is the line the arrow touches, not the leader.
+- A line that runs up into the bottom of a column of the board's header strip is connected to that board at that way; the column's DESCRIPTION says what the way feeds.
+- Other ends: a rectangular box with text inside (e.g. JB P01, ISO T01, TELEMETRY OUTSTATION), an equipment symbol with its name next to it (e.g. STORM RETURN PUMP NO.1), a note "FROM DRAWING ..." / "TO DRAWING ..." (the cable continues on another sheet), or "FROM DNO".
+- Where several similar items sit side by side (pump no.1, no.2, ...), follow the line itself to the one it actually reaches; do not pick the nearest name.
+
+FOR EACH CABLE
+- Follow the cable's own line from its label in both directions to where it ends, and report both ends:
+  - board_way: name = the board name if visible (else empty), way = the column's DESCRIPTION.
+  - box: name = all the text inside the box.
+  - equipment: name = the equipment's label, without power ratings like "5.5 kW".
+  - other_drawing: name = the note as written; drawing_number = the drawing number.
+  - dno: "FROM DNO" or similar.
+  - unknown: you cannot see where the line ends in this image.
+- cores_size, cable_type, band: as written next to the label ("VENDOR CABLE" if it says so). Empty if not shown.
+- line_leaves_image: true if the cable's line runs off the edge of the image so you could not see an end.
+- found: false if you cannot find this reference in the image at all.
+- Copy names exactly as written, using the word list for spelling.
+- confidence: "high" only if you could clearly follow the line to both ends.`;
+var CHECK_SCHEMA = {
+  type: "object",
+  properties: {
+    cables: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          image: { type: "integer", description: "The number of the close-up image this answer is for." },
+          ref: { type: "string" },
+          found: { type: "boolean" },
+          end_a: END_SCHEMA,
+          end_b: END_SCHEMA,
+          cores_size: { type: "string" },
+          cable_type: { type: "string" },
+          band: { type: "string" },
+          line_leaves_image: { type: "boolean" },
+          confidence: { type: "string", enum: ["high", "medium", "low"] },
+          note: { type: "string", description: "One short sentence on what you saw, especially anything unclear." }
+        },
+        required: ["image", "ref", "found", "end_a", "end_b", "cores_size", "cable_type", "band", "line_leaves_image", "confidence"]
+      }
+    }
+  },
+  required: ["cables"]
+};
+function checkUserText(sheet, board, items) {
+  const lines = [`Sheet: ${sheet.title || sheet.file}${sheet.wbNumber ? ` (${sheet.wbNumber})` : ""}.`];
+  if (board) lines.push(`The board on this sheet (its header strip) is "${board}".`);
+  lines.push("", `There are ${items.length} close-up image${items.length === 1 ? "" : "s"}, one per cable. Positions are on a 0\u20131000 scale across the whole sheet (x left to right, y top to bottom); each image says which part of the sheet it shows.`);
+  for (const it of items) {
+    lines.push("", `Image ${it.n}: cable ${it.ref}, label at about (${it.at[0]}, ${it.at[1]}).`);
+    if (it.words.length) lines.push(`  Words printed in this area: ${it.words.map((w) => `"${w}"`).join(", ")}`);
+  }
+  lines.push("", "Answer once for every image, in order.");
   return lines.join("\n");
 }
 
@@ -1690,6 +1841,286 @@ function replayProvider(store2, name = "Saved AI answers") {
   };
 }
 
+// src/ai/targeted.js
+var BATCH = 5;
+var SPOTS_PER_SHEET = 2;
+var hash = (s) => {
+  let h = 2166136261;
+  for (const c of s) h = Math.imul(h ^ c.charCodeAt(0), 16777619);
+  return h >>> 0;
+};
+function planChecks(ruleRows, { spots = SPOTS_PER_SHEET } = {}) {
+  const plans = /* @__PURE__ */ new Map();
+  for (const r of ruleRows) {
+    const kinds = r.flagKinds || (r.flags || []).map(classifyFlag);
+    const reading = r.flags.filter((f, i) => kinds[i] === "reading");
+    const person = r.flags.filter((f, i) => kinds[i] === "missing" || kinds[i] === "conflict");
+    const views = r.views || [];
+    let jobs = views.filter((v) => v.uncertain.length);
+    if (!jobs.length && reading.length) jobs = views;
+    jobs = jobs.filter((v) => v.region);
+    const kind = jobs.length ? "ai" : person.length ? "person" : "none";
+    plans.set(r.ref, {
+      kind,
+      jobs: jobs.map((v) => ({ ref: r.ref, sheet: v.sheet, file: v.file, region: v.region, why: v.uncertain.map((u) => u.text), openEnd: v.uncertain.some((u) => u.code === "column" || u.code === "open") })),
+      person,
+      reasons: [...new Set(jobs.flatMap((v) => v.uncertain.map((u) => u.text)).concat(jobs.length && !jobs.some((v) => v.uncertain.length) ? reading : []))]
+    });
+  }
+  const bySheet = /* @__PURE__ */ new Map();
+  for (const r of ruleRows) {
+    const p = plans.get(r.ref);
+    if (p.kind !== "none") continue;
+    for (const v of r.views || []) {
+      if (!v.region) continue;
+      if (!bySheet.has(v.file)) bySheet.set(v.file, []);
+      bySheet.get(v.file).push({ r, v });
+    }
+  }
+  for (const [file, list] of bySheet) {
+    list.sort((a, b) => hash(a.r.ref) - hash(b.r.ref));
+    for (const { r, v } of list.filter((x) => plans.get(x.r.ref).kind === "none").slice(0, spots)) {
+      const p = plans.get(r.ref);
+      p.kind = "spot";
+      p.jobs = [{ ref: r.ref, sheet: v.sheet, file, region: v.region, why: [], spot: true }];
+    }
+  }
+  return plans;
+}
+var summarisePlan = (plans) => {
+  const c = { ai: 0, person: 0, spot: 0, none: 0, requests: 0 };
+  const perFile = /* @__PURE__ */ new Map();
+  for (const p of plans.values()) {
+    c[p.kind]++;
+    for (const j of p.jobs) perFile.set(j.file, (perFile.get(j.file) || 0) + 1);
+  }
+  for (const n of perFile.values()) c.requests += Math.ceil(n / BATCH);
+  return c;
+};
+var widen = ([x0, y0, x1, y1], W, H) => {
+  const w = x1 - x0, h = y1 - y0;
+  return [Math.max(0, x0 - w / 2), Math.max(0, y0 - h / 2), Math.min(W, x1 + w / 2), Math.min(H, y1 + h / 2)].map(Math.round);
+};
+async function targetedCheck({ sheets, drawings, ruleRows, rules = DEFAULT_RULES, provider, onProgress = () => {
+}, parallel = 3, spots = SPOTS_PER_SHEET, escalate = true }) {
+  const t0 = Date.now();
+  const log = [];
+  const raw = { promptVersion: CHECK_VERSION, check: {} };
+  const plans = planChecks(ruleRows, { spots });
+  const sheetOf = new Map(sheets.map((s) => [s.drawing.file, s]));
+  const failedJobs = /* @__PURE__ */ new Set();
+  const answers = /* @__PURE__ */ new Map();
+  let requests = 0, stopped = false, gaveUp = false, okCount = 0, failCount = 0, usage = { input: 0, output: 0 };
+  const wordsIn = (s, [x0, y0, x1, y1]) => {
+    const out2 = [];
+    for (const t of s.texts || []) if (t.x1 > x0 && t.x0 < x1 && t.y1 > y0 && t.y0 < y1) {
+      const w = t.str.trim();
+      if (w && !out2.includes(w)) out2.push(w);
+    }
+    return out2.slice(0, 120);
+  };
+  const runJobs = async (jobs, label) => {
+    const byFile = /* @__PURE__ */ new Map();
+    for (const j of jobs) {
+      if (!byFile.has(j.file)) byFile.set(j.file, []);
+      byFile.get(j.file).push(j);
+    }
+    const batches = [];
+    for (const [file, list] of byFile) for (let i = 0; i < list.length; i += BATCH) batches.push({ file, list: list.slice(i, i + BATCH) });
+    let done = 0;
+    const one = async ({ file, list }, wide = false) => {
+      const s = sheetOf.get(file);
+      const d = s?.drawing;
+      if (!d) {
+        list.forEach((j) => failedJobs.add(`${file}|${j.ref}`));
+        return;
+      }
+      const W = d.page.width, H = d.page.height;
+      const items = [], images = [];
+      for (const [i, j] of list.entries()) {
+        const region = wide ? widen(j.region, W, H) : j.region;
+        const cable = d.cables.find((c) => c.ref === j.ref);
+        const img = await s.renderRegion(region);
+        const tl = toSheetScale(region[0], region[1], W, H), br = toSheetScale(region[2], region[3], W, H);
+        images.push({ name: `${i + 1}`, box: [...tl, ...br], mime: img.mime, data: img.data });
+        items.push({ n: i + 1, ref: j.ref, at: cable ? toSheetScale(cable.at[0], cable.at[1], W, H) : [Math.round((tl[0] + br[0]) / 2), Math.round((tl[1] + br[1]) / 2)], words: wordsIn(s, region) });
+      }
+      const tag = `check:${file}:${list.map((j) => j.ref).join(",")}${wide ? ":wide" : ""}`;
+      try {
+        requests++;
+        const res = await provider.generate({ tag, system: CHECK_SYSTEM, text: checkUserText({ ...d.drawing, file }, d.panel?.name || "", items), images, schema: CHECK_SCHEMA });
+        raw.check[tag] = res.json;
+        okCount++;
+        if (res.usage) {
+          usage.input += res.usage.promptTokenCount || 0;
+          usage.output += res.usage.candidatesTokenCount || 0;
+        }
+        const got = Array.isArray(res.json?.cables) ? res.json.cables : [];
+        const retry = [];
+        for (const [i, j] of list.entries()) {
+          const ref = j.ref;
+          const a = got.find((c) => Number(c?.image) === i + 1 && String(c?.ref || "").replace(/\s+/g, "").toUpperCase() === ref) || got.find((c) => String(c?.ref || "").replace(/\s+/g, "").toUpperCase() === ref);
+          if (!a || a.found === false) {
+            if (!wide) {
+              retry.push(j);
+              continue;
+            }
+            log.push(`${file}: the AI could not find ${ref} in its close-up`);
+            failedJobs.add(`${file}|${ref}`);
+            continue;
+          }
+          const unknownEnd = [a.end_a, a.end_b].some((e) => !e || e.kind === "unknown");
+          if (!wide && !j.openEnd && (a.line_leaves_image || unknownEnd)) {
+            retry.push(j);
+            continue;
+          }
+          answers.set(`${file}|${ref}`, { ...toCable({ ...a, ref }), confidence: a.confidence, note: clean(a.note), wide });
+        }
+        if (retry.length) {
+          log.push(`${file}: looking again with a wider area for ${retry.map((j) => j.ref).join(", ")}`);
+          await one({ file, list: retry }, true);
+        }
+      } catch (e) {
+        if (e.stopped) stopped = true;
+        else if (++failCount >= 2 && okCount === 0 && !gaveUp) {
+          gaveUp = true;
+          log.push(`The AI service failed on the first requests (${e.message.replace(/ Gave up.*$/, "")}), so the rest were not sent.`);
+        }
+        log.push(`${file}: AI check ${e.stopped ? "stopped" : "failed"} for ${list.map((j) => j.ref).join(", ")}: ${e.message}`);
+        list.forEach((j) => failedJobs.add(`${file}|${j.ref}`));
+      }
+      if (!wide) {
+        done++;
+        onProgress(`${label}: ${done} of ${batches.length} request${batches.length === 1 ? "" : "s"} done`);
+      }
+    };
+    onProgress(`${label}: 0 of ${batches.length} request${batches.length === 1 ? "" : "s"} done`);
+    const queue = [...batches];
+    await Promise.all(Array.from({ length: Math.min(parallel, queue.length) }, async () => {
+      while (queue.length && !stopped && !gaveUp) await one(queue.shift());
+    }));
+    for (const b of queue) b.list.forEach((j) => failedJobs.add(`${b.file}|${j.ref}`));
+  };
+  const compareRow = (r) => {
+    const p = plans.get(r.ref);
+    const got = p.jobs.filter((j) => answers.has(`${j.file}|${j.ref}`));
+    if (!got.length) return null;
+    const swapped = drawings.map((d) => {
+      const j = got.find((x) => x.file === d.file);
+      if (!j) return d;
+      const a = answers.get(`${d.file}|${r.ref}`);
+      let ends = a.ends.map((e) => e.kind === "panel" && !e.name ? { ...e, name: d.panel?.name || "" } : e);
+      for (const [i, o] of [[0, 1], [1, 0]]) {
+        const pe = ends[i];
+        if (pe.kind === "panel" && ends[o].kind === "unknown" && pe.way && !/INCOMER|\bFROM\b|SPARE/i.test(pe.way)) ends[o] = { kind: "device", name: pe.way };
+      }
+      const mine = d.cables.find((c) => c.ref === r.ref);
+      const nn = (x) => String(x || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+      ends = ends.map((e) => mine?.ends.find((m) => m.name && nn(m.name) === nn(e.name) || m.kind === "panel" && e.kind === "panel" && nn(m.name) === nn(e.name)) || e);
+      return { ...d, cables: d.cables.map((c) => c.ref === r.ref ? { ...c, ...a, ends, flags: [], at: c.at, region: c.region, uncertain: [] } : c) };
+    });
+    const aRow = mergeDrawings(swapped, rules).rows.find((x) => x.ref === r.ref);
+    if (!aRow) return null;
+    const fields = {};
+    for (const [f] of FIELDS) fields[f] = { status: compareField(f, r, aRow), rules: fieldText(r, f), ai: fieldText(aRow, f) };
+    return { aRow, fields, notes: got.map((j) => answers.get(`${j.file}|${j.ref}`).note).filter(Boolean) };
+  };
+  const first = [...plans.values()].filter((p) => p.kind === "ai" || p.kind === "spot").flatMap((p) => p.jobs);
+  if (first.length) await runJobs(first, "AI checking the unsure readings");
+  if (escalate && !stopped && !gaveUp) {
+    const bad = /* @__PURE__ */ new Set();
+    for (const r of ruleRows) {
+      const p = plans.get(r.ref);
+      if (p.kind !== "spot") continue;
+      const c = compareRow(r);
+      if (c && Object.values(c.fields).some((f) => f.status === "differ")) bad.add(p.jobs[0].file);
+    }
+    if (bad.size) {
+      const more = [];
+      for (const r of ruleRows) {
+        const p = plans.get(r.ref);
+        if (p.kind !== "none") continue;
+        const vs = (r.views || []).filter((v) => bad.has(v.file) && v.region);
+        if (!vs.length) continue;
+        p.kind = "escalated";
+        p.jobs = vs.map((v) => ({ ref: r.ref, sheet: v.sheet, file: v.file, region: v.region, why: [] }));
+        more.push(...p.jobs);
+      }
+      log.push(`A spot check disagreed on ${[...bad].join(", ")}, so every other cable on ${bad.size === 1 ? "that sheet" : "those sheets"} was checked too (${more.length}).`);
+      if (more.length) await runJobs(more, "AI checking the rest of the sheet");
+    }
+  }
+  const out = [];
+  for (const r of ruleRows) {
+    const p = plans.get(r.ref);
+    const row = { ...r, flags: [...r.flags] };
+    const reasons = p.reasons;
+    if (p.kind === "none") {
+      row.check = { status: "not_needed", plan: "none" };
+      out.push(row);
+      continue;
+    }
+    if (p.kind === "person") {
+      row.check = { status: "person", plan: "person", why: p.person };
+      out.push(row);
+      continue;
+    }
+    const c = compareRow(r);
+    if (!c) {
+      row.check = { status: "not_checked", plan: p.kind, why: reasons };
+      if (p.kind === "ai") row.flags.push("AI check could not be done for this cable; please check it on the drawing");
+      out.push(row);
+      continue;
+    }
+    const { aRow, fields, notes } = c;
+    for (const [f, label] of FIELDS) {
+      const fl = fields[f];
+      if (fl.status === "filled") {
+        if (f === "ends") {
+          row.source = aRow.source;
+          row.destination = aRow.destination;
+        } else {
+          row[f] = aRow[f];
+          if (f === "band") row.voltage = aRow.voltage;
+        }
+        row.flags.push(`AI filled in ${label.toLowerCase()}: ${fl.ai}`);
+      } else if (fl.status === "differ") {
+        row.flags.push(`AI reads ${label.toLowerCase()} as "${fl.ai}" (rules engine: "${fl.rules}")`);
+      }
+    }
+    const sts = Object.values(fields).map((x) => x.status);
+    const differ = sts.includes("differ");
+    const status2 = differ ? "disputed" : sts.includes("filled") ? "filled" : sts.every((x) => x === "agree" || x === "both_empty") ? "confirmed" : "unconfirmed";
+    if (status2 === "confirmed" && p.kind === "ai") {
+      row.flags = row.flags.filter((f) => classifyFlag(f) !== "reading" || /^No /.test(f));
+      row.notes = [...row.notes || [], `Confirmed by the AI from a close-up (it was checked because ${reasons.join("; ")})`];
+    }
+    row.check = { status: status2, plan: p.kind, why: reasons, fields, note: notes.join(" ") };
+    if (p.person.length) row.check.person = p.person;
+    out.push(row);
+  }
+  out.sort(rules.sortRows);
+  const count = (st) => out.filter((r) => r.check?.status === st).length;
+  if (stopped) log.push("Stopped: cables not checked yet show the rules engine's reading only.");
+  return {
+    rows: out,
+    log,
+    raw,
+    model: await provider.model(),
+    provider: provider.name,
+    stats: { requests, seconds: Math.round((Date.now() - t0) / 1e3), tokens: usage, planned: summarisePlan(plans) },
+    summary: {
+      confirmed: count("confirmed"),
+      disputed: count("disputed"),
+      filled: count("filled"),
+      unconfirmed: count("unconfirmed"),
+      person: count("person"),
+      notNeeded: count("not_needed"),
+      notChecked: count("not_checked")
+    }
+  };
+}
+
 // src/app.js
 pdfjs.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.worker.min.mjs";
 var $ = (s) => document.querySelector(s);
@@ -1699,7 +2130,9 @@ var state = {
   template: null,
   onlyFlagged: false,
   sources: /* @__PURE__ */ new Map(),
-  // file -> { bytes, page, pageText }   kept so the AI can render the sheet later
+  // file -> { bytes, page, pageText, texts }   kept so the AI can render the sheet later
+  ruleRows: [],
+  // the rules engine's rows, before any AI check
   ai: null
   // { store, model, provider, summary, log, files }  last AI cross-check
 };
@@ -1708,12 +2141,17 @@ var EDITABLE = ["ref", "source", "destination", "type", "size", "voltage", "band
 var FIELD_COLS = { ends: ["source", "destination"], type: ["type"], size: ["size"], band: ["band"] };
 var FIELD_LABEL = { ends: "Ends", type: "Type", size: "Size", band: "Band" };
 var STATUS = {
+  confirmed: ["Confirmed", "The AI read the same from a close-up of the drawing"],
+  filled: ["AI filled in", "The AI filled in a value the rules engine could not find \u2014 check it"],
+  person: ["Needs a person", "The information is missing or the drawings disagree; the AI cannot settle this"],
+  not_needed: ["Not needed", "A clear-cut reading, so it was not sent to the AI"],
+  resolved: ["Picked by you", "You chose between the two readings"],
   agreed: ["Agreed", "AI and rules engine agree"],
   disputed: ["Disputed", "AI and rules engine disagree"],
   unconfirmed: ["Unconfirmed", "Partly confirmed by the AI"],
   ai_only: ["AI only", "Found by the AI only"],
   rules_only: ["Rules only", "The AI did not report this cable"],
-  not_checked: ["Not checked", "The AI could not read this sheet"]
+  not_checked: ["Not checked", "The AI check did not finish for this cable"]
 };
 function b64ToBuf(b64) {
   const bin = atob(b64);
@@ -1760,7 +2198,7 @@ async function readFiles(files) {
         if (!d.cables.length && geom.texts.length >= 10) d.warn.push("No cable references found.");
         state.drawings = state.drawings.filter((x) => x.file !== d.file && !(d.drawing.wbNumber && x.drawing.wbNumber === d.drawing.wbNumber));
         state.drawings.push(d);
-        state.sources.set(d.file, { bytes, page: p, pageText: geom.texts.map((t) => t.str).join(" ") });
+        state.sources.set(d.file, { bytes, page: p, pageText: geom.texts.map((t) => t.str).join(" "), texts: geom.texts.map(({ str, x0, y0, x1, y1 }) => ({ str, x0, y0, x1, y1 })) });
       }
     } catch (e) {
       console.error(e);
@@ -1809,12 +2247,40 @@ var sheetsFor = () => state.drawings.map((d) => {
     }
   };
 });
+var pageCache = /* @__PURE__ */ new Map();
+var pageOf = async (file) => {
+  if (!pageCache.has(file)) {
+    const src = state.sources.get(file);
+    pageCache.set(file, pdfjs.getDocument({ data: src.bytes.slice(), verbosity: 0 }).promise.then((doc) => doc.getPage(src.page)));
+  }
+  return pageCache.get(file);
+};
+var closeUpSheets = () => state.drawings.map((d) => ({
+  drawing: d,
+  texts: state.sources.get(d.file)?.texts || [],
+  renderRegion: async (region) => renderRegion(await pageOf(d.file), region, {
+    makeCanvas: (w, h) => {
+      const c = document.createElement("canvas");
+      c.width = w;
+      c.height = h;
+      return c;
+    },
+    encode: async (c) => c.toDataURL("image/jpeg", 0.9).split(",")[1]
+  })
+}));
+var anyScanned = () => state.drawings.some((d) => (state.sources.get(d.file)?.texts.length || 0) < 10);
+var runCheck = (provider, onProgress) => {
+  const rules = rulesNow();
+  const ruleRows = mergeDrawings(state.drawings, rules).rows;
+  return anyScanned() ? crossCheck({ sheets: sheetsFor(), ruleRows, rules, provider, onProgress }).then((r) => ({ ...r, mode: "whole" })) : targetedCheck({ sheets: closeUpSheets(), drawings: state.drawings, ruleRows, rules, provider, onProgress }).then((r) => ({ ...r, mode: "targeted" }));
+};
 async function remerge() {
   const rules = rulesNow();
   const ruleRows = mergeDrawings(state.drawings, rules).rows;
+  state.ruleRows = ruleRows;
   const files = state.drawings.map((d) => d.file).sort().join("|");
   if (state.ai && state.ai.files === files) {
-    const res = await crossCheck({ sheets: sheetsFor(), ruleRows, rules, provider: replayProvider(state.ai.store, state.ai.provider) });
+    const res = await runCheck(replayProvider(state.ai.store, state.ai.provider));
     state.rows = res.rows;
   } else {
     if (state.ai) {
@@ -1831,16 +2297,27 @@ function showAI() {
   const btn = $("#btn-ai");
   btn.disabled = !on || !state.drawings.length || !$("#ai-key").value.trim();
   const s = state.ai?.summary;
-  $("#ai-result").innerHTML = s ? `
+  const plan = !s && state.ruleRows.length && !anyScanned() ? summarisePlan(planChecks(state.ruleRows)) : null;
+  $("#ai-plan").innerHTML = plan ? `The AI will look at close-ups of <b>${plan.ai}</b> unsure reading${plan.ai === 1 ? "" : "s"} and <b>${plan.spot}</b> spot check${plan.spot === 1 ? "" : "s"} (${plan.requests} small request${plan.requests === 1 ? "" : "s"}). <b>${plan.none}</b> clear-cut readings are not sent. <b>${plan.person}</b> row${plan.person === 1 ? " needs" : "s need"} a person (missing information or drawings that disagree), which the AI cannot settle.` : !s && anyScanned() ? "A sheet has no text layer (scanned), so the AI will read the sheets whole. This is slower." : "";
+  const st = state.ai?.stats;
+  $("#ai-result").innerHTML = s && state.ai.mode === "targeted" ? `
+    <span><b class="ok">${s.confirmed}</b> confirmed</span>
+    <span><b class="warnc">${s.disputed}</b> disputed</span>
+    ${s.filled ? `<span><b class="warnc">${s.filled}</b> filled in by AI</span>` : ""}
+    ${s.unconfirmed ? `<span><b class="warnc">${s.unconfirmed}</b> partly confirmed</span>` : ""}
+    <span><b class="warnc">${s.person}</b> need a person</span>
+    <span><b>${s.notNeeded}</b> not needed</span>
+    ${s.notChecked ? `<span><b class="badc">${s.notChecked}</b> not checked</span>` : ""}
+    ${st ? `<span class="muted">${st.requests} request${st.requests === 1 ? "" : "s"} \xB7 ${st.seconds} s</span>` : ""}` : s ? `
     <span><b class="ok">${s.agreed}</b> agreed</span>
     <span><b class="warnc">${s.disputed}</b> disputed</span>
     ${s.unconfirmed ? `<span><b class="warnc">${s.unconfirmed}</b> partly confirmed</span>` : ""}
     ${s.aiOnly ? `<span><b class="warnc">${s.aiOnly}</b> found by AI only</span>` : ""}
     ${s.rulesOnly ? `<span><b class="warnc">${s.rulesOnly}</b> not reported by AI</span>` : ""}
     ${s.notChecked ? `<span><b class="badc">${s.notChecked}</b> not checked</span>` : ""}
-    ${state.ai.retryable ? `<button id="btn-ai-retry" class="ghost small" type="button">Retry what failed</button>` : ""}
-    <span class="muted">${esc(state.ai.provider)} \xB7 ${esc(state.ai.model)}</span>
-    ${state.ai.log.length ? `<details><summary>${state.ai.log.length} note${state.ai.log.length === 1 ? "" : "s"} from the check</summary><ul>${state.ai.log.map((l) => `<li>${esc(l)}</li>`).join("")}</ul></details>` : ""}` : "";
+    ${state.ai?.retryable ? `<button id="btn-ai-retry" class="ghost small" type="button">Retry what failed</button>` : ""}
+    ${s ? `<span class="muted">${esc(state.ai.provider)} \xB7 ${esc(state.ai.model)}</span>` : ""}
+    ${state.ai?.log.length ? `<details><summary>${state.ai.log.length} note${state.ai.log.length === 1 ? "" : "s"} from the check</summary><ul>${state.ai.log.map((l) => `<li>${esc(l)}</li>`).join("")}</ul></details>` : ""}` : "";
 }
 var aiRun = null;
 async function runAI(retry = false) {
@@ -1867,18 +2344,17 @@ async function runAI(retry = false) {
   aiRun.timer = setInterval(() => status(`${aiRun.last}\u2026 ${clock()}`), 1e3);
   const files = state.drawings.map((d) => d.file).sort().join("|");
   try {
-    const rules = rulesNow();
-    const ruleRows = mergeDrawings(state.drawings, rules).rows;
-    const live = geminiProvider({ apiKey: key, onWait: say, isStopped: () => aiRun.stopped, ...globalThis.BCD_AI_OPTIONS || {} });
+    const live = geminiProvider({ apiKey: key, onWait: say, isStopped: () => aiRun.stopped, ...anyScanned() ? {} : { timeoutMs: 5e4, budgetMs: 15e4 }, ...globalThis.BCD_AI_OPTIONS || {} });
     const prov = retry && state.ai?.files === files ? resumeProvider(state.ai.store, live) : recordingProvider(live);
-    const res = await crossCheck({ sheets: sheetsFor(), ruleRows, rules, provider: prov, onProgress: say });
+    const res = await runCheck(prov, say);
     const failed = res.log.filter((l) => /failed|stopped/.test(l)).length;
-    state.ai = { store: prov.store, model: res.model, provider: res.provider, summary: res.summary, log: res.log, raw: res.raw, files, retryable: failed > 0 };
+    state.ai = { store: prov.store, model: res.model, provider: res.provider, summary: res.summary, log: res.log, raw: res.raw, files, retryable: failed > 0, mode: res.mode, stats: res.stats };
     state.rows = res.rows;
     render();
     const s = res.summary, took = clock();
     if (aiRun.stopped) status(`AI check stopped after ${took}. Rows it had not checked show "Not checked"; the rules engine's reading is unchanged. You can carry on with "Retry what failed".`, "warn");
     else if (failed) status(`AI cross-check finished with problems after ${took}: ${s.notChecked ? `${s.notChecked} rows not checked` : "some reviews failed"}. The rules engine's reading is unchanged for those rows. You can retry just what failed.`, "warn");
+    else if (res.mode === "targeted") status(`AI check done in ${took}: ${s.confirmed} confirmed, ${s.disputed} disputed${s.filled ? `, ${s.filled} filled in` : ""}; ${s.person} row${s.person === 1 ? " needs" : "s need"} a person. Check the amber rows.`, s.disputed || s.person ? "warn" : "good");
     else status(`AI cross-check done in ${took}: ${s.agreed} agreed, ${s.disputed} disputed. Check the amber rows.`, s.disputed ? "warn" : "good");
   } catch (e) {
     console.error(e);
@@ -1929,12 +2405,13 @@ function render() {
         ${rv?.reason ? `<span class="why">AI review: ${esc(rv.reason)}</span>` : ""}</div>`);
     }
     const otherFlags = r.flags.filter((f) => !/^AI (reads|review)/.test(f));
+    if (r.check?.note && (st === "disputed" || st === "filled" || st === "unconfirmed")) picks.push(`<span class="why">AI saw: ${esc(r.check.note)}</span>`);
     return `<tr class="${r.flags.length ? "flagged" : ""}">
       <td class="sev"><span class="dot" title="${r.flags.length ? "Needs checking" : "OK"}"></span></td>
       ${withAI ? `<td><span class="badge" data-st="${st || "none"}" title="${esc(STATUS[st]?.[1] || "")}">${esc(STATUS[st]?.[0] || "\u2014")}</span></td>` : ""}
       ${EDITABLE.map((k) => `<td contenteditable="true" spellcheck="false" data-i="${i}" data-k="${k}" class="${k === "ref" || k === "size" ? "mono" : ""}${disputedCols.has(k) ? " disputed" : ""}">${esc(r[k])}</td>`).join("")}
       <td class="sheets mono muted">${r.sheets.map((s) => esc(s.replace(/^.*-W-/, "W-"))).join("<br>")}</td>
-      <td class="flags">${picks.join("")}${otherFlags.map((f) => `<span class="chip">${esc(f)}</span>`).join("")}</td>
+      <td class="flags">${picks.join("")}${otherFlags.map((f) => `<span class="chip">${esc(f)}</span>`).join("")}${(r.notes || []).map((n) => `<span class="chip note">${esc(n)}</span>`).join("")}</td>
     </tr>`;
   }).join("") : `<tr><td colspan="${withAI ? 11 : 10}" class="empty">${state.rows.length ? "No rows need checking." : "Drop BCD PDFs above to build the schedule."}</td></tr>`;
   const ready = state.rows.length > 0;
@@ -1964,7 +2441,7 @@ function pick(i, f, which) {
   const label = { ends: "source / destination", type: "cable type", size: "cores & size", band: "band" }[f];
   row.flags = row.flags.filter((x) => !(/^AI (reads|review)/.test(x) && x.includes(label)));
   if (!Object.values(row.check.fields).some((x) => x.status === "differ")) {
-    row.check.status = "agreed";
+    row.check.status = "resolved";
     row.flags = row.flags.filter((x) => !/^AI (reads|review)/.test(x));
   }
   render();
@@ -2017,7 +2494,7 @@ function exportJson() {
     generated: (/* @__PURE__ */ new Date()).toISOString(),
     header: header(),
     drawings: state.drawings.map((d) => ({ file: d.file, drawing: d.drawing, panel: d.panel, cables: d.cables })),
-    ai: state.ai ? { provider: state.ai.provider, model: state.ai.model, summary: state.ai.summary, log: state.ai.log, savedAnswers: state.ai.store } : null,
+    ai: state.ai ? { provider: state.ai.provider, model: state.ai.model, mode: state.ai.mode, stats: state.ai.stats, summary: state.ai.summary, log: state.ai.log, savedAnswers: state.ai.store } : null,
     rows: state.rows
   };
   saveFile(`${safeName(header().projectTitle)}_cables.json`, JSON.stringify(out, null, 2));
@@ -2059,6 +2536,7 @@ $("#drawings").addEventListener("click", (e) => {
   if (i === void 0) return;
   const [d] = state.drawings.splice(+i, 1);
   state.sources.delete(d.file);
+  pageCache.delete(d.file);
   remerge();
 });
 $("#tbody").addEventListener("input", (e) => {
@@ -2082,7 +2560,9 @@ $("#btn-csv").addEventListener("click", exportReview);
 $("#btn-clear").addEventListener("click", () => {
   state.drawings = [];
   state.rows = [];
+  state.ruleRows = [];
   state.sources.clear();
+  pageCache.clear();
   state.ai = null;
   render();
   status("Cleared.");

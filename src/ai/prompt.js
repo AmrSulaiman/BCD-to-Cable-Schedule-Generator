@@ -51,7 +51,7 @@ export const READ_SYSTEM_NO_LIST = READ_SYSTEM.replace(
   '- Report each cable reference you can read exactly once. Never invent a reference. Leave other_refs_seen empty.',
 );
 
-const END_SCHEMA = {
+export const END_SCHEMA = {
   type: 'object',
   properties: {
     kind: { type: 'string', enum: ['board_way', 'box', 'equipment', 'other_drawing', 'dno', 'unknown'] },
@@ -141,5 +141,77 @@ export function reviewUserText(sheet, items) {
     lines.push(`    B: ${it.b}`);
   }
   lines.push('', 'The images follow: first an overview, then close-up tiles.');
+  return lines.join('\n');
+}
+
+// ---------------------------------------------------------------------------- close-up check
+// Used by targeted.js. The AI gets one close-up image per cable (only the part of the
+// sheet around that cable), plus the exact words the PDF has printed in that area. It
+// is not told what the rules engine read, so its answer is an independent reading.
+export const CHECK_VERSION = 'check-v1';
+
+export const CHECK_SYSTEM = `You are an experienced electrical engineer reading close-up views of a block cable diagram (BCD) to check a cable schedule. You read literally and never guess.
+
+WHAT YOU ARE SHOWN
+Each image is a close-up of one part of a large drawing sheet, cut out around one cable. You are told which cable reference to look at, roughly where its label is, and the exact words printed in that area (taken from the PDF, so their spelling is reliable even if the image is blurry).
+
+HOW THESE DRAWINGS WORK
+- A cable is a line. Beside it is its label: a reference such as L25NA1001, usually followed by a voltage band, (B1), (B2) or (B1&B2). On the other side of the line is its specification, e.g. "4c x 2.5mm² XLPE/SWA BS5467": cores and size, then cable type.
+- Some labels are horizontal and joined to their cable by a leader line ending in an arrow; the cable is the line the arrow touches, not the leader.
+- A line that runs up into the bottom of a column of the board's header strip is connected to that board at that way; the column's DESCRIPTION says what the way feeds.
+- Other ends: a rectangular box with text inside (e.g. JB P01, ISO T01, TELEMETRY OUTSTATION), an equipment symbol with its name next to it (e.g. STORM RETURN PUMP NO.1), a note "FROM DRAWING ..." / "TO DRAWING ..." (the cable continues on another sheet), or "FROM DNO".
+- Where several similar items sit side by side (pump no.1, no.2, ...), follow the line itself to the one it actually reaches; do not pick the nearest name.
+
+FOR EACH CABLE
+- Follow the cable's own line from its label in both directions to where it ends, and report both ends:
+  - board_way: name = the board name if visible (else empty), way = the column's DESCRIPTION.
+  - box: name = all the text inside the box.
+  - equipment: name = the equipment's label, without power ratings like "5.5 kW".
+  - other_drawing: name = the note as written; drawing_number = the drawing number.
+  - dno: "FROM DNO" or similar.
+  - unknown: you cannot see where the line ends in this image.
+- cores_size, cable_type, band: as written next to the label ("VENDOR CABLE" if it says so). Empty if not shown.
+- line_leaves_image: true if the cable's line runs off the edge of the image so you could not see an end.
+- found: false if you cannot find this reference in the image at all.
+- Copy names exactly as written, using the word list for spelling.
+- confidence: "high" only if you could clearly follow the line to both ends.`;
+
+export const CHECK_SCHEMA = {
+  type: 'object',
+  properties: {
+    cables: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          image: { type: 'integer', description: 'The number of the close-up image this answer is for.' },
+          ref: { type: 'string' },
+          found: { type: 'boolean' },
+          end_a: END_SCHEMA,
+          end_b: END_SCHEMA,
+          cores_size: { type: 'string' },
+          cable_type: { type: 'string' },
+          band: { type: 'string' },
+          line_leaves_image: { type: 'boolean' },
+          confidence: { type: 'string', enum: ['high', 'medium', 'low'] },
+          note: { type: 'string', description: 'One short sentence on what you saw, especially anything unclear.' },
+        },
+        required: ['image', 'ref', 'found', 'end_a', 'end_b', 'cores_size', 'cable_type', 'band', 'line_leaves_image', 'confidence'],
+      },
+    },
+  },
+  required: ['cables'],
+};
+
+// items: [{ n, ref, at:[x,y] (0–1000 sheet scale), words:[...] }]
+export function checkUserText(sheet, board, items) {
+  const lines = [`Sheet: ${sheet.title || sheet.file}${sheet.wbNumber ? ` (${sheet.wbNumber})` : ''}.`];
+  if (board) lines.push(`The board on this sheet (its header strip) is "${board}".`);
+  lines.push('', `There are ${items.length} close-up image${items.length === 1 ? '' : 's'}, one per cable. Positions are on a 0–1000 scale across the whole sheet (x left to right, y top to bottom); each image says which part of the sheet it shows.`);
+  for (const it of items) {
+    lines.push('', `Image ${it.n}: cable ${it.ref}, label at about (${it.at[0]}, ${it.at[1]}).`);
+    if (it.words.length) lines.push(`  Words printed in this area: ${it.words.map(w => `"${w}"`).join(', ')}`);
+  }
+  lines.push('', 'Answer once for every image, in order.');
   return lines.join('\n');
 }
