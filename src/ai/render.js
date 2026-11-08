@@ -15,7 +15,7 @@ export const DEFAULT_RENDER = { cols: 3, rows: 2, overlap: 0.08, tilePx: 1600, o
 // `area` = [x0, y0, x1, y1] in PDF points: the part of the sheet with the diagram on it
 // (from extractDrawing). Empty margins and the title block are left out so the text
 // comes out larger.
-export async function renderPageForAI(page, { makeCanvas, encode, area, ...opts }) {
+export async function renderPageForAI(page, { makeCanvas, encode, area, mime = 'image/png', ...opts }) {
   const o = { ...DEFAULT_RENDER, ...opts };
   const base = page.getViewport({ scale: 1 });
   const [ax0, ay0, ax1, ay1] = area || [0, 0, base.width, base.height];
@@ -41,7 +41,7 @@ export async function renderPageForAI(page, { makeCanvas, encode, area, ...opts 
   const octx = ov.getContext('2d');
   octx.fillStyle = '#ffffff'; octx.fillRect(0, 0, ow, oh);
   octx.drawImage(big, 0, 0, W, H, 0, 0, ow, oh);
-  images.push({ name: 'overview', box: [sx(0), sy(0), sx(W), sy(H)], mime: 'image/png', data: await encode(ov) });
+  images.push({ name: 'overview', box: [sx(0), sy(0), sx(W), sy(H)], mime, data: await encode(ov) });
 
   // tiles
   const cw = W / o.cols, ch = H / o.rows;
@@ -54,7 +54,7 @@ export async function renderPageForAI(page, { makeCanvas, encode, area, ...opts 
     images.push({
       name: `tile row ${r + 1} col ${c + 1}`,
       box: [sx(x0), sy(y0), sx(x1), sy(y1)],
-      mime: 'image/png', data: await encode(t),
+      mime, data: await encode(t),
     });
   }
   return { width: base.width, height: base.height, images };

@@ -9,13 +9,17 @@
 //   - requests are spaced out so a big drawing set does not trip the per-minute limit
 //   - "too many requests" waits as long as Google says (up to 65 s) and tries again
 //   - a used-up free model (daily limit) or a missing model -> switch to the next free model
+//   - each request has an overall budget (default 3 min) across all its retries
+//   - the AI is asked to keep its "thinking" short (much faster for reading drawings);
+//     models that do not accept that setting are asked again without it
+//   - the caller can stop at any time (isStopped)
 //   - every failure ends in an AIError with a plain-English message; nothing hangs
 
 const BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
 export class AIError extends Error {
-  constructor(message, { status, retryable, quota, waitMs } = {}) {
-    super(message); this.status = status; this.retryable = !!retryable; this.quota = !!quota; this.waitMs = waitMs;
+  constructor(message, { status, retryable, quota, waitMs, stopped } = {}) {
+    super(message); this.status = status; this.retryable = !!retryable; this.quota = !!quota; this.waitMs = waitMs; this.stopped = !!stopped;
   }
 }
 
@@ -38,16 +42,20 @@ export async function listModels(apiKey, fetchImpl = fetch, timeoutMs = 30000) {
 }
 export async function pickModel(apiKey, fetchImpl = fetch) { return (await listModels(apiKey, fetchImpl))[0]; }
 
-async function timedFetch(fetchImpl, url, opts, timeoutMs) {
+async function timedFetch(fetchImpl, url, opts, timeoutMs, isStopped = () => false) {
   const ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
-  let timer;
-  const timeout = new Promise((_, rej) => { timer = setTimeout(() => { ctl?.abort(); rej(new AIError(`The AI service did not answer within ${Math.round(timeoutMs / 1000)} seconds.`, { retryable: true })); }, timeoutMs); });
+  let timer, poll;
+  const timeout = new Promise((_, rej) => {
+    timer = setTimeout(() => { ctl?.abort(); rej(new AIError(`The AI service did not answer within ${Math.round(timeoutMs / 1000)} seconds.`, { retryable: true })); }, timeoutMs);
+    poll = setInterval(() => { if (isStopped()) { ctl?.abort(); rej(new AIError('Stopped.', { stopped: true })); } }, 300);
+  });
   try {
     return await Promise.race([fetchImpl(url, { ...opts, signal: ctl?.signal }), timeout]);
   } catch (e) {
+    if (isStopped()) throw new AIError('Stopped.', { stopped: true });
     if (e instanceof AIError) throw e;
     throw new AIError(`Could not reach the AI service: ${e.message}`, { retryable: true });
-  } finally { clearTimeout(timer); }
+  } finally { clearTimeout(timer); clearInterval(poll); }
 }
 
 async function toError(res) {
@@ -72,8 +80,9 @@ async function toError(res) {
  * options: apiKey, model (force one), fetchImpl, timeoutMs (per request), gapMs (spacing),
  *          maxWaitMs (longest single wait for a limit), onWait(message)
  */
-export function geminiProvider({ apiKey, model, fetchImpl = (...a) => fetch(...a), timeoutMs = 90000, gapMs = 4000, maxWaitMs = 65000, onWait = () => {} }) {
-  let models = model ? [model] : null, current = 0, lastCall = 0;
+export function geminiProvider({ apiKey, model, fetchImpl = (...a) => fetch(...a), timeoutMs = 90000, budgetMs = 180000, gapMs = 4000, maxWaitMs = 65000, onWait = () => {}, isStopped = () => false }) {
+  let models = model ? [model] : null, current = 0, lastCall = 0, thinkingOk = true;
+  const stopCheck = () => { if (isStopped()) throw new AIError('Stopped.', { stopped: true }); };
   return {
     name: 'Google Gemini',
     async model() {
@@ -87,48 +96,66 @@ export function geminiProvider({ apiKey, model, fetchImpl = (...a) => fetch(...a
         parts.push({ text: `Image "${im.name}": shows x ${im.box[0]}–${im.box[2]}, y ${im.box[1]}–${im.box[3]} of the sheet.` });
         parts.push({ inline_data: { mime_type: im.mime, data: im.data } });
       }
-      const body = JSON.stringify({
+      const makeBody = () => JSON.stringify({
         systemInstruction: { parts: [{ text: system }] },
         contents: [{ role: 'user', parts }],
-        generationConfig: { temperature: 0, responseMimeType: 'application/json', responseSchema: schema },
+        generationConfig: {
+          temperature: 0, responseMimeType: 'application/json', responseSchema: schema,
+          ...(thinkingOk ? { thinkingConfig: { thinkingLevel: 'low' } } : {}),
+        },
       });
-      let lastErr;
-      for (let attempt = 0; attempt < 5; attempt++) {
-        // keep requests spaced out
+      const deadline = Date.now() + budgetMs;
+      const left = () => deadline - Date.now();
+      // wait in small steps so Stop works during waits
+      const pause = async ms => { const end = Date.now() + Math.min(ms, Math.max(0, left())); while (Date.now() < end) { stopCheck(); await sleep(Math.min(500, end - Date.now())); } };
+      let lastErr, timeouts = 0, sentThinking = thinkingOk;
+      for (let attempt = 0; attempt < 6; attempt++) {
+        stopCheck();
+        if (left() < 5000) break;
         const since = Date.now() - lastCall;
-        if (since < gapMs) await sleep(gapMs - since);
+        if (since < gapMs) await pause(gapMs - since);
         lastCall = Date.now();
         const m = models[current];
         let res;
         try {
+          sentThinking = thinkingOk;
           res = await timedFetch(fetchImpl, `${BASE}/models/${m}:generateContent`, {
-            method: 'POST', headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey }, body,
-          }, timeoutMs);
-        } catch (e) { lastErr = e; if (attempt < 2) { await sleep(2000 * 2 ** attempt); continue; } break; }
-
+            method: 'POST', headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey }, body: makeBody(),
+          }, Math.min(timeoutMs, left()), isStopped);
+        } catch (e) {
+          if (e.stopped) throw e;
+          lastErr = e;
+          if (/did not answer/.test(e.message) && ++timeouts >= 2) break;   // two slow answers in a row: give up on this one
+          onWait(`${e.message} Trying again…`);
+          await pause(2000 * 2 ** Math.min(attempt, 3)); continue;
+        }
         if (!res.ok) {
           lastErr = await toError(res);
+          // this model does not accept the "short thinking" setting: ask again without it
+          if (lastErr.status === 400 && sentThinking && /think/i.test(lastErr.message)) { thinkingOk = false; continue; }
           if (lastErr.quota && current < models.length - 1) {
-            // this model's free allowance is used up: carry on with the next free model
             current++;
             onWait(`${lastErr.message} Switching to ${models[current]}…`);
             continue;
           }
-          if (lastErr.retryable && attempt < 4) {
-            const wait = Math.min(lastErr.waitMs ?? 2000 * 2 ** attempt, maxWaitMs);
-            if (lastErr.status === 429) onWait(`${lastErr.message} Waiting ${Math.round(wait / 1000)} s…`);
-            await sleep(wait);
+          if (lastErr.retryable) {
+            const wait = Math.min(lastErr.waitMs ?? 2000 * 2 ** Math.min(attempt, 3), maxWaitMs);
+            if (left() < wait + 5000) break;
+            onWait(lastErr.status === 429 ? `${lastErr.message} Waiting ${Math.round(wait / 1000)} s…`
+              : `Google's AI service is busy (${lastErr.status || 'no answer'}). Trying again in ${Math.round(wait / 1000)} s…`);
+            await pause(wait);
             continue;
           }
           throw lastErr;
         }
         const j = await res.json();
         const cand = j.candidates?.[0];
-        const out = cand?.content?.parts?.map(p => p.text || '').join('') || '';
+        const out = cand?.content?.parts?.filter(p => !p.thought).map(p => p.text || '').join('') || '';
         if (!out) { lastErr = new AIError(`The AI returned no answer (${cand?.finishReason || j.promptFeedback?.blockReason || 'unknown reason'}).`, { retryable: true }); continue; }
         try { return { json: JSON.parse(out), model: m, usage: j.usageMetadata }; }
         catch { lastErr = new AIError('The AI answer was not valid JSON.', { retryable: true }); continue; }
       }
+      if (lastErr && !/gave up/.test(lastErr.message)) lastErr.message += ' Gave up on this sheet for now.';
       throw lastErr || new AIError('The AI request failed.');
     },
   };

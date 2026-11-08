@@ -182,8 +182,10 @@ button.opt.rec { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--ac
           <p class="notice">When you run it, images of the drawings are sent to Google's Gemini service. On Google's free tier, Google may use what you send to improve its products. The rules engine's reading never leaves this computer.</p>
           <label for="ai-key">Gemini API key <span class="muted">(free from aistudio.google.com → Get API key)</span>
             <input id="ai-key" type="password" autocomplete="off" spellcheck="false" placeholder="Paste your key"></label>
-          <label class="inline" for="ai-remember"><input id="ai-remember" type="checkbox"> Remember the key in this browser</label>
-          <div class="actions"><button id="btn-ai" type="button" disabled>Run AI cross-check</button></div>
+          <label class="inline" for="ai-remember"><input id="ai-remember" type="checkbox" checked> Remember the key in this browser</label>
+          <label class="inline" for="ai-auto"><input id="ai-auto" type="checkbox" checked> Run the AI check automatically when drawings are added</label>
+          <div class="actions"><button id="btn-ai" type="button" disabled>Run AI cross-check</button><button id="btn-ai-stop" class="ghost" type="button" hidden>Stop</button></div>
+          <p class="muted" style="margin:0;font-size:.8rem">Usually takes 1–3 minutes for 4 sheets. Progress and a timer are shown below the download buttons. The schedule is ready to use straight away; the AI results are added when they arrive.</p>
           <div id="ai-result" class="ai-result"></div>
         </div>
       </div>

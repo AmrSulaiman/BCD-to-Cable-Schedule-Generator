@@ -182,8 +182,10 @@ button.opt.rec { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--ac
           <p class="notice">When you run it, images of the drawings are sent to Google's Gemini service. On Google's free tier, Google may use what you send to improve its products. The rules engine's reading never leaves this computer.</p>
           <label for="ai-key">Gemini API key <span class="muted">(free from aistudio.google.com → Get API key)</span>
             <input id="ai-key" type="password" autocomplete="off" spellcheck="false" placeholder="Paste your key"></label>
-          <label class="inline" for="ai-remember"><input id="ai-remember" type="checkbox"> Remember the key in this browser</label>
-          <div class="actions"><button id="btn-ai" type="button" disabled>Run AI cross-check</button></div>
+          <label class="inline" for="ai-remember"><input id="ai-remember" type="checkbox" checked> Remember the key in this browser</label>
+          <label class="inline" for="ai-auto"><input id="ai-auto" type="checkbox" checked> Run the AI check automatically when drawings are added</label>
+          <div class="actions"><button id="btn-ai" type="button" disabled>Run AI cross-check</button><button id="btn-ai-stop" class="ghost" type="button" hidden>Stop</button></div>
+          <p class="muted" style="margin:0;font-size:.8rem">Usually takes 1–3 minutes for 4 sheets. Progress and a timer are shown below the download buttons. The schedule is ready to use straight away; the AI results are added when they arrive.</p>
           <div id="ai-result" class="ai-result"></div>
         </div>
       </div>
@@ -1032,7 +1034,7 @@ async function buildWorkbook(ExcelJS, templateBuffer, header2, rows) {
 
 // src/ai/render.js
 var DEFAULT_RENDER = { cols: 3, rows: 2, overlap: 0.08, tilePx: 1600, overviewPx: 2e3 };
-async function renderPageForAI(page, { makeCanvas, encode, area, ...opts }) {
+async function renderPageForAI(page, { makeCanvas, encode, area, mime = "image/png", ...opts }) {
   const o = { ...DEFAULT_RENDER, ...opts };
   const base = page.getViewport({ scale: 1 });
   const [ax0, ay0, ax1, ay1] = area || [0, 0, base.width, base.height];
@@ -1055,7 +1057,7 @@ async function renderPageForAI(page, { makeCanvas, encode, area, ...opts }) {
   octx.fillStyle = "#ffffff";
   octx.fillRect(0, 0, ow, oh);
   octx.drawImage(big, 0, 0, W, H, 0, 0, ow, oh);
-  images.push({ name: "overview", box: [sx(0), sy(0), sx(W), sy(H)], mime: "image/png", data: await encode(ov) });
+  images.push({ name: "overview", box: [sx(0), sy(0), sx(W), sy(H)], mime, data: await encode(ov) });
   const cw = W / o.cols, ch = H / o.rows;
   for (let r = 0; r < o.rows; r++) for (let c = 0; c < o.cols; c++) {
     const x0 = Math.max(0, Math.floor(c * cw - cw * o.overlap)), x1 = Math.min(W, Math.ceil((c + 1) * cw + cw * o.overlap));
@@ -1066,7 +1068,7 @@ async function renderPageForAI(page, { makeCanvas, encode, area, ...opts }) {
     images.push({
       name: `tile row ${r + 1} col ${c + 1}`,
       box: [sx(x0), sy(y0), sx(x1), sy(y1)],
-      mime: "image/png",
+      mime,
       data: await encode(t)
     });
   }
@@ -1077,12 +1079,13 @@ var toSheetScale = (x, y, width, height) => [Math.round(x / width * 1e3), Math.r
 // src/ai/gemini.js
 var BASE = "https://generativelanguage.googleapis.com/v1beta";
 var AIError = class extends Error {
-  constructor(message, { status: status2, retryable, quota, waitMs } = {}) {
+  constructor(message, { status: status2, retryable, quota, waitMs, stopped } = {}) {
     super(message);
     this.status = status2;
     this.retryable = !!retryable;
     this.quota = !!quota;
     this.waitMs = waitMs;
+    this.stopped = !!stopped;
   }
 };
 var sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -1096,22 +1099,30 @@ async function listModels(apiKey, fetchImpl = fetch, timeoutMs = 3e4) {
   const lite = (n) => /-lite/.test(n) ? 1 : 0, prev = (n) => /preview/.test(n) ? 1 : 0;
   return names.sort((a, b) => lite(a) - lite(b) || ver(b) - ver(a) || prev(a) - prev(b));
 }
-async function timedFetch(fetchImpl, url, opts, timeoutMs) {
+async function timedFetch(fetchImpl, url, opts, timeoutMs, isStopped = () => false) {
   const ctl = typeof AbortController !== "undefined" ? new AbortController() : null;
-  let timer;
+  let timer, poll;
   const timeout = new Promise((_, rej) => {
     timer = setTimeout(() => {
       ctl?.abort();
       rej(new AIError(`The AI service did not answer within ${Math.round(timeoutMs / 1e3)} seconds.`, { retryable: true }));
     }, timeoutMs);
+    poll = setInterval(() => {
+      if (isStopped()) {
+        ctl?.abort();
+        rej(new AIError("Stopped.", { stopped: true }));
+      }
+    }, 300);
   });
   try {
     return await Promise.race([fetchImpl(url, { ...opts, signal: ctl?.signal }), timeout]);
   } catch (e) {
+    if (isStopped()) throw new AIError("Stopped.", { stopped: true });
     if (e instanceof AIError) throw e;
     throw new AIError(`Could not reach the AI service: ${e.message}`, { retryable: true });
   } finally {
     clearTimeout(timer);
+    clearInterval(poll);
   }
 }
 async function toError(res) {
@@ -1135,9 +1146,12 @@ async function toError(res) {
   if (res.status >= 500) return new AIError(`The AI service had a problem (${res.status}).`, { status: res.status, retryable: true });
   return new AIError(`AI request failed: ${msg}`, { status: res.status });
 }
-function geminiProvider({ apiKey, model, fetchImpl = (...a) => fetch(...a), timeoutMs = 9e4, gapMs = 4e3, maxWaitMs = 65e3, onWait = () => {
-} }) {
-  let models = model ? [model] : null, current = 0, lastCall = 0;
+function geminiProvider({ apiKey, model, fetchImpl = (...a) => fetch(...a), timeoutMs = 9e4, budgetMs = 18e4, gapMs = 4e3, maxWaitMs = 65e3, onWait = () => {
+}, isStopped = () => false }) {
+  let models = model ? [model] : null, current = 0, lastCall = 0, thinkingOk = true;
+  const stopCheck = () => {
+    if (isStopped()) throw new AIError("Stopped.", { stopped: true });
+  };
   return {
     name: "Google Gemini",
     async model() {
@@ -1151,50 +1165,72 @@ function geminiProvider({ apiKey, model, fetchImpl = (...a) => fetch(...a), time
         parts.push({ text: `Image "${im.name}": shows x ${im.box[0]}\u2013${im.box[2]}, y ${im.box[1]}\u2013${im.box[3]} of the sheet.` });
         parts.push({ inline_data: { mime_type: im.mime, data: im.data } });
       }
-      const body = JSON.stringify({
+      const makeBody = () => JSON.stringify({
         systemInstruction: { parts: [{ text: system }] },
         contents: [{ role: "user", parts }],
-        generationConfig: { temperature: 0, responseMimeType: "application/json", responseSchema: schema }
+        generationConfig: {
+          temperature: 0,
+          responseMimeType: "application/json",
+          responseSchema: schema,
+          ...thinkingOk ? { thinkingConfig: { thinkingLevel: "low" } } : {}
+        }
       });
-      let lastErr;
-      for (let attempt = 0; attempt < 5; attempt++) {
+      const deadline = Date.now() + budgetMs;
+      const left = () => deadline - Date.now();
+      const pause = async (ms) => {
+        const end = Date.now() + Math.min(ms, Math.max(0, left()));
+        while (Date.now() < end) {
+          stopCheck();
+          await sleep(Math.min(500, end - Date.now()));
+        }
+      };
+      let lastErr, timeouts = 0, sentThinking = thinkingOk;
+      for (let attempt = 0; attempt < 6; attempt++) {
+        stopCheck();
+        if (left() < 5e3) break;
         const since = Date.now() - lastCall;
-        if (since < gapMs) await sleep(gapMs - since);
+        if (since < gapMs) await pause(gapMs - since);
         lastCall = Date.now();
         const m = models[current];
         let res;
         try {
+          sentThinking = thinkingOk;
           res = await timedFetch(fetchImpl, `${BASE}/models/${m}:generateContent`, {
             method: "POST",
             headers: { "content-type": "application/json", "x-goog-api-key": apiKey },
-            body
-          }, timeoutMs);
+            body: makeBody()
+          }, Math.min(timeoutMs, left()), isStopped);
         } catch (e) {
+          if (e.stopped) throw e;
           lastErr = e;
-          if (attempt < 2) {
-            await sleep(2e3 * 2 ** attempt);
-            continue;
-          }
-          break;
+          if (/did not answer/.test(e.message) && ++timeouts >= 2) break;
+          onWait(`${e.message} Trying again\u2026`);
+          await pause(2e3 * 2 ** Math.min(attempt, 3));
+          continue;
         }
         if (!res.ok) {
           lastErr = await toError(res);
+          if (lastErr.status === 400 && sentThinking && /think/i.test(lastErr.message)) {
+            thinkingOk = false;
+            continue;
+          }
           if (lastErr.quota && current < models.length - 1) {
             current++;
             onWait(`${lastErr.message} Switching to ${models[current]}\u2026`);
             continue;
           }
-          if (lastErr.retryable && attempt < 4) {
-            const wait = Math.min(lastErr.waitMs ?? 2e3 * 2 ** attempt, maxWaitMs);
-            if (lastErr.status === 429) onWait(`${lastErr.message} Waiting ${Math.round(wait / 1e3)} s\u2026`);
-            await sleep(wait);
+          if (lastErr.retryable) {
+            const wait = Math.min(lastErr.waitMs ?? 2e3 * 2 ** Math.min(attempt, 3), maxWaitMs);
+            if (left() < wait + 5e3) break;
+            onWait(lastErr.status === 429 ? `${lastErr.message} Waiting ${Math.round(wait / 1e3)} s\u2026` : `Google's AI service is busy (${lastErr.status || "no answer"}). Trying again in ${Math.round(wait / 1e3)} s\u2026`);
+            await pause(wait);
             continue;
           }
           throw lastErr;
         }
         const j = await res.json();
         const cand = j.candidates?.[0];
-        const out = cand?.content?.parts?.map((p) => p.text || "").join("") || "";
+        const out = cand?.content?.parts?.filter((p) => !p.thought).map((p) => p.text || "").join("") || "";
         if (!out) {
           lastErr = new AIError(`The AI returned no answer (${cand?.finishReason || j.promptFeedback?.blockReason || "unknown reason"}).`, { retryable: true });
           continue;
@@ -1206,6 +1242,7 @@ function geminiProvider({ apiKey, model, fetchImpl = (...a) => fetch(...a), time
           continue;
         }
       }
+      if (lastErr && !/gave up/.test(lastErr.message)) lastErr.message += " Gave up on this sheet for now.";
       throw lastErr || new AIError("The AI request failed.");
     }
   };
@@ -1435,7 +1472,8 @@ function compareField(f, r, a) {
   return x === y ? "agree" : "differ";
 }
 async function crossCheck({ sheets, ruleRows, rules = DEFAULT_RULES, provider, onProgress = () => {
-}, review = true }) {
+}, review = true, parallel = 2 }) {
+  const stopNote = /* @__PURE__ */ new Set();
   const log = [];
   const raw = { promptVersion: PROMPT_VERSION, read: {}, review: {} };
   const model = await provider.model();
@@ -1446,9 +1484,10 @@ async function crossCheck({ sheets, ruleRows, rules = DEFAULT_RULES, provider, o
     return imageCache.get(s);
   };
   const aiDrawings = [], failed = /* @__PURE__ */ new Set(), missingByRef = /* @__PURE__ */ new Map();
-  for (const [i, s] of sheets.entries()) {
+  let done = 0;
+  const readSheet = async (s, i) => {
     const d = s.drawing;
-    onProgress(`AI reading sheet ${i + 1} of ${sheets.length}: ${d.drawing.title || d.file}`);
+    onProgress(`AI reading the drawings: ${done} of ${sheets.length} sheets done`);
     const refs = d.cables.map((c) => ({ ref: c.ref, at: toSheetScale(c.at[0], c.at[1], d.page.width, d.page.height) }));
     const noList = refs.length === 0;
     try {
@@ -1473,9 +1512,20 @@ async function crossCheck({ sheets, ruleRows, rules = DEFAULT_RULES, provider, o
       });
     } catch (e) {
       failed.add(d.file);
-      log.push(`${d.file}: AI reading failed: ${e.message}`);
+      if (e.stopped) stopNote.add(d.file);
+      log.push(`${d.file}: AI reading ${e.stopped ? "stopped" : "failed"}: ${e.message}`);
     }
-  }
+    done++;
+    onProgress(`AI reading the drawings: ${done} of ${sheets.length} sheets done`);
+  };
+  const queue = sheets.map((s, i) => [s, i]);
+  await Promise.all(Array.from({ length: Math.min(parallel, queue.length) }, async () => {
+    while (queue.length) {
+      const [s, i] = queue.shift();
+      await readSheet(s, i);
+    }
+  }));
+  aiDrawings.sort((a, b) => sheets.findIndex((s) => s.drawing.file === a.file) - sheets.findIndex((s) => s.drawing.file === b.file));
   const aiRows = new Map(mergeDrawings(aiDrawings, rules).rows.map((r) => [r.ref, r]));
   const aiOnlyRefs = new Set(aiDrawings.flatMap((d) => d.cables.filter((c) => c.aiOnly).map((c) => c.ref)));
   const refSheets = /* @__PURE__ */ new Map();
@@ -1585,7 +1635,8 @@ async function crossCheck({ sheets, ruleRows, rules = DEFAULT_RULES, provider, o
           }
         }
       } catch (e) {
-        log.push(`${s.drawing.file}: AI review failed: ${e.message}`);
+        log.push(`${s.drawing.file}: AI review ${e.stopped ? "stopped" : "failed"}: ${e.message}`);
+        if (e.stopped) break;
       }
     }
   }
@@ -1718,7 +1769,9 @@ async function readFiles(files) {
   }
   fillHeaderDefaults();
   await remerge();
-  status(`Read ${state.drawings.length} drawing${state.drawings.length === 1 ? "" : "s"}.${$("#ai-on").checked ? ' Click "Run AI cross-check" to check them with the AI.' : ""}`, "good");
+  const autoAI = $("#ai-on").checked && $("#ai-auto").checked && $("#ai-key").value.trim() && state.drawings.length && !aiRun?.timer;
+  status(`Read ${state.drawings.length} drawing${state.drawings.length === 1 ? "" : "s"}.${$("#ai-on").checked && !autoAI ? ' Click "Run AI cross-check" to check them with the AI.' : ""}`, "good");
+  if (autoAI) runAI(false);
 }
 function fillHeaderDefaults() {
   const d = state.drawings.find((x) => x.drawing.project || x.drawing.clientNumber);
@@ -1748,7 +1801,9 @@ var sheetsFor = () => state.drawings.map((d) => {
           c.height = h;
           return c;
         },
-        encode: async (c) => c.toDataURL("image/png").split(",")[1]
+        mime: "image/jpeg",
+        // much smaller than PNG; text stays sharp at this quality
+        encode: async (c) => c.toDataURL("image/jpeg", 0.88).split(",")[1]
       });
       return r.images;
     }
@@ -1787,6 +1842,7 @@ function showAI() {
     <span class="muted">${esc(state.ai.provider)} \xB7 ${esc(state.ai.model)}</span>
     ${state.ai.log.length ? `<details><summary>${state.ai.log.length} note${state.ai.log.length === 1 ? "" : "s"} from the check</summary><ul>${state.ai.log.map((l) => `<li>${esc(l)}</li>`).join("")}</ul></details>` : ""}` : "";
 }
+var aiRun = null;
 async function runAI(retry = false) {
   const key = $("#ai-key").value.trim();
   if (!key) {
@@ -1795,28 +1851,44 @@ async function runAI(retry = false) {
   }
   if ($("#ai-remember").checked) store.set("bcd-ai-key", key);
   else store.set("bcd-ai-key", null);
-  const btn = $("#btn-ai");
+  const btn = $("#btn-ai"), stop = $("#btn-ai-stop");
   btn.disabled = true;
   btn.textContent = "Checking\u2026";
+  stop.hidden = false;
+  aiRun = { stopped: false, started: Date.now(), last: "Starting the AI check" };
+  const clock = () => {
+    const t = Math.round((Date.now() - aiRun.started) / 1e3);
+    return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, "0")}`;
+  };
+  const say = (m) => {
+    aiRun.last = m.replace(/…$/, "");
+    status(`${aiRun.last}\u2026 ${clock()}`);
+  };
+  aiRun.timer = setInterval(() => status(`${aiRun.last}\u2026 ${clock()}`), 1e3);
   const files = state.drawings.map((d) => d.file).sort().join("|");
   try {
     const rules = rulesNow();
     const ruleRows = mergeDrawings(state.drawings, rules).rows;
-    const live = geminiProvider({ apiKey: key, onWait: (m) => status(m), ...globalThis.BCD_AI_OPTIONS || {} });
+    const live = geminiProvider({ apiKey: key, onWait: say, isStopped: () => aiRun.stopped, ...globalThis.BCD_AI_OPTIONS || {} });
     const prov = retry && state.ai?.files === files ? resumeProvider(state.ai.store, live) : recordingProvider(live);
-    const res = await crossCheck({ sheets: sheetsFor(), ruleRows, rules, provider: prov, onProgress: (m) => status(m + "\u2026") });
-    const failed = res.log.filter((l) => /failed/.test(l)).length;
+    const res = await crossCheck({ sheets: sheetsFor(), ruleRows, rules, provider: prov, onProgress: say });
+    const failed = res.log.filter((l) => /failed|stopped/.test(l)).length;
     state.ai = { store: prov.store, model: res.model, provider: res.provider, summary: res.summary, log: res.log, raw: res.raw, files, retryable: failed > 0 };
     state.rows = res.rows;
     render();
-    const s = res.summary;
-    if (failed) status(`AI cross-check finished with problems: ${s.notChecked ? `${s.notChecked} rows not checked` : "some reviews failed"}. The rules engine's reading is unchanged for those rows. You can retry just what failed.`, "warn");
-    else status(`AI cross-check done: ${s.agreed} agreed, ${s.disputed} disputed. Check the amber rows.`, s.disputed ? "warn" : "good");
+    const s = res.summary, took = clock();
+    if (aiRun.stopped) status(`AI check stopped after ${took}. Rows it had not checked show "Not checked"; the rules engine's reading is unchanged. You can carry on with "Retry what failed".`, "warn");
+    else if (failed) status(`AI cross-check finished with problems after ${took}: ${s.notChecked ? `${s.notChecked} rows not checked` : "some reviews failed"}. The rules engine's reading is unchanged for those rows. You can retry just what failed.`, "warn");
+    else status(`AI cross-check done in ${took}: ${s.agreed} agreed, ${s.disputed} disputed. Check the amber rows.`, s.disputed ? "warn" : "good");
   } catch (e) {
     console.error(e);
-    status(`AI cross-check could not run: ${e.message} The schedule still shows the rules engine's reading, and you can download it as normal.`, "bad");
+    status(aiRun.stopped ? "AI check stopped. The schedule shows the rules engine's reading." : `AI cross-check could not run: ${e.message} The schedule still shows the rules engine's reading, and you can download it as normal.`, aiRun.stopped ? "warn" : "bad");
   } finally {
+    clearInterval(aiRun.timer);
+    aiRun.timer = null;
     btn.textContent = "Run AI cross-check";
+    stop.hidden = true;
+    stop.disabled = false;
     showAI();
   }
 }
@@ -2016,6 +2088,13 @@ $("#btn-clear").addEventListener("click", () => {
   status("Cleared.");
 });
 $("#btn-ai").addEventListener("click", () => runAI(false));
+$("#btn-ai-stop").addEventListener("click", () => {
+  if (aiRun) {
+    aiRun.stopped = true;
+    aiRun.last = "Stopping";
+    $("#btn-ai-stop").disabled = true;
+  }
+});
 $("#ai-result").addEventListener("click", (e) => {
   if (e.target.id === "btn-ai-retry") runAI(true);
 });
@@ -2026,13 +2105,19 @@ $("#ai-on").addEventListener("change", () => {
 $("#ai-key").addEventListener("input", showAI);
 $("#ai-remember").addEventListener("change", () => {
   if (!$("#ai-remember").checked) store.set("bcd-ai-key", null);
+  else if ($("#ai-key").value.trim()) store.set("bcd-ai-key", $("#ai-key").value.trim());
 });
+$("#ai-key").addEventListener("change", () => {
+  if ($("#ai-remember").checked && $("#ai-key").value.trim()) store.set("bcd-ai-key", $("#ai-key").value.trim());
+});
+$("#ai-auto").addEventListener("change", () => store.set("bcd-ai-auto", $("#ai-auto").checked ? null : "off"));
 var savedKey = store.get("bcd-ai-key");
 if (savedKey) {
   $("#ai-key").value = savedKey;
   $("#ai-remember").checked = true;
 }
 if (store.get("bcd-ai-on")) $("#ai-on").checked = true;
+if (store.get("bcd-ai-auto") === "off") $("#ai-auto").checked = false;
 render();
 
 </script>

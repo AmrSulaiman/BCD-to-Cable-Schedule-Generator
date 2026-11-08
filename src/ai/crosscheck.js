@@ -111,7 +111,8 @@ function compareField(f, r, a) {
  * ruleRows: mergeDrawings(rules drawings).rows
  * provider: { name, model(), generate({ system, text, images, schema, tag }) }
  */
-export async function crossCheck({ sheets, ruleRows, rules = DEFAULT_RULES, provider, onProgress = () => {}, review = true }) {
+export async function crossCheck({ sheets, ruleRows, rules = DEFAULT_RULES, provider, onProgress = () => {}, review = true, parallel = 2 }) {
+  const stopNote = new Set();
   const log = [];
   const raw = { promptVersion: PROMPT_VERSION, read: {}, review: {} };
   const model = await provider.model();
@@ -121,9 +122,11 @@ export async function crossCheck({ sheets, ruleRows, rules = DEFAULT_RULES, prov
 
   // 1–2. read each sheet
   const aiDrawings = [], failed = new Set(), missingByRef = new Map();
-  for (const [i, s] of sheets.entries()) {
+  // read up to `parallel` sheets at the same time
+  let done = 0;
+  const readSheet = async (s, i) => {
     const d = s.drawing;
-    onProgress(`AI reading sheet ${i + 1} of ${sheets.length}: ${d.drawing.title || d.file}`);
+    onProgress(`AI reading the drawings: ${done} of ${sheets.length} sheets done`);
     const refs = d.cables.map(c => ({ ref: c.ref, at: toSheetScale(c.at[0], c.at[1], d.page.width, d.page.height) }));
     const noList = refs.length === 0;
     try {
@@ -144,9 +147,18 @@ export async function crossCheck({ sheets, ruleRows, rules = DEFAULT_RULES, prov
       });
     } catch (e) {
       failed.add(d.file);
-      log.push(`${d.file}: AI reading failed: ${e.message}`);
+      if (e.stopped) stopNote.add(d.file);
+      log.push(`${d.file}: AI reading ${e.stopped ? 'stopped' : 'failed'}: ${e.message}`);
     }
-  }
+    done++;
+    onProgress(`AI reading the drawings: ${done} of ${sheets.length} sheets done`);
+  };
+  const queue = sheets.map((s, i) => [s, i]);
+  await Promise.all(Array.from({ length: Math.min(parallel, queue.length) }, async () => {
+    while (queue.length) { const [s, i] = queue.shift(); await readSheet(s, i); }
+  }));
+  // keep sheets in their original order for the merge
+  aiDrawings.sort((a, b) => sheets.findIndex(s => s.drawing.file === a.file) - sheets.findIndex(s => s.drawing.file === b.file));
 
   // 3. same merge + naming rules as the rules engine, then compare
   const aiRows = new Map(mergeDrawings(aiDrawings, rules).rows.map(r => [r.ref, r]));
@@ -244,7 +256,8 @@ export async function crossCheck({ sheets, ruleRows, rules = DEFAULT_RULES, prov
           }
         }
       } catch (e) {
-        log.push(`${s.drawing.file}: AI review failed: ${e.message}`);
+        log.push(`${s.drawing.file}: AI review ${e.stopped ? 'stopped' : 'failed'}: ${e.message}`);
+        if (e.stopped) break;
       }
     }
   }
