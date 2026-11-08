@@ -275,7 +275,7 @@ function exportJson() {
   const out = {
     generated: new Date().toISOString(), header: header(),
     drawings: state.drawings.map(d => ({ file: d.file, drawing: d.drawing, panel: d.panel, cables: d.cables })),
-    ai: state.ai ? { provider: state.ai.provider, model: state.ai.model, summary: state.ai.summary, log: state.ai.log, answers: state.ai.raw } : null,
+    ai: state.ai ? { provider: state.ai.provider, model: state.ai.model, summary: state.ai.summary, log: state.ai.log, savedAnswers: state.ai.store } : null,
     rows: state.rows,
   };
   saveFile(`${safeName(header().projectTitle)}_cables.json`, JSON.stringify(out, null, 2));
