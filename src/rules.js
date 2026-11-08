@@ -50,6 +50,10 @@ export function normaliseSize(s) {
   t = t.replace(/mm²/g, 'mm2');
   t = t.replace(/\s*x\s*/gi, ' x ');
   t = t.replace(/(\d)\s*(c|pr|g)\b/gi, (m, d, u) => d + (u.toLowerCase() === 'pr' ? 'PR' : u.toLowerCase() === 'g' ? 'G' : 'c'));
+  // "3c 70mm" (no "x"): the cores and the size are still separate parts
+  t = t.replace(/^((?:\d+ x )?\d+(?:c|PR|G)) (?=\d)/, '$1 x ');
+  // cable sizes are cross-sections, so a plain "mm" (the ² drawn separately) is mm2
+  t = t.replace(/(\d)\s*mm(?![2²])\b/g, '$1mm2');
   if (/\d$/.test(t) && !/mm2$/.test(t)) t += 'mm2';
   t = t.replace(/(\d)\s*mm2/, '$1mm2');
   return t;
@@ -76,5 +80,7 @@ export const DEFAULT_RULES = {
   direction: 'supply-first',
   bandVoltage: BAND_VOLTAGE,
   prefixBand: { L: 'B2', LC: 'B2', CE: 'B1' },
+  // company numbering: L25NA1001 = prefix, year, area code, then this many digits
+  refDigits: 4,
   sortRows,
 };

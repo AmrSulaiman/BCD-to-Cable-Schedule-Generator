@@ -39,6 +39,7 @@ const projectsDir = path.join(here, 'projects');
 const baselineFile = path.join(here, 'baseline.json');
 const args = process.argv.slice(2);
 const updateBaseline = args.includes('--update-baseline');
+const updateSnapshot = args.includes('--update-snapshot');
 const aiLive = args.includes('--ai-live');
 const only = args.filter(a => !a.startsWith('--'));
 
@@ -162,12 +163,26 @@ for (const name of projects) {
   const pdfs = files.filter(f => /\.pdf$/i.test(f)).map(f => path.join(dir, f));
   const xlsx = files.filter(f => /\.xlsx$/i.test(f) && !f.startsWith('~$'));
   const settings = files.includes('settings.json') ? JSON.parse(fs.readFileSync(path.join(dir, 'settings.json'), 'utf8')) : {};
-  if (!pdfs.length || xlsx.length !== 1) {
-    problems.push(`${name}: needs the BCD PDFs and exactly one .xlsx (the correct schedule). Found ${pdfs.length} PDF(s) and ${xlsx.length} .xlsx file(s).`);
+  // A project without a checked schedule can use a snapshot: the tool's output as last
+  // checked by hand (snapshot.json). It does not prove the output is right, only that a
+  // change did not make it worse. --update-snapshot writes it.
+  const snapFile = path.join(dir, 'snapshot.json');
+  const useSnap = !xlsx.length && (fs.existsSync(snapFile) || updateSnapshot);
+  if (!pdfs.length || (xlsx.length !== 1 && !useSnap)) {
+    problems.push(`${name}: needs the BCD PDFs and exactly one .xlsx (the correct schedule), or a snapshot.json. Found ${pdfs.length} PDF(s) and ${xlsx.length} .xlsx file(s).`);
     continue;
   }
   try {
-    const correct = await readCorrectSchedule(path.join(dir, xlsx[0]));
+    let correct;
+    if (useSnap) {
+      if (updateSnapshot) {
+        const { rows } = await runTool(pdfs, settings);
+        fs.writeFileSync(snapFile, JSON.stringify({ note: 'Tool output checked by hand against the drawings; not an issued schedule.', rows: rows.map(r => ({ ref: r.ref, source: r.source, destination: r.destination, type: r.type, size: r.size, voltage: r.voltage, band: r.band })) }, null, 1) + '\n');
+        console.error(`${name}: snapshot written`);
+      }
+      correct = new Map();
+      for (const r of JSON.parse(fs.readFileSync(snapFile, 'utf8')).rows) if (!correct.has(r.ref)) correct.set(r.ref, r);
+    } else correct = await readCorrectSchedule(path.join(dir, xlsx[0]));
     const { drawings, sheets, rules, rows } = await runTool(pdfs, settings);
     results[name] = { sheets: drawings.length, ...compare(correct, rows) };
     // AI cross-check: live (records answers) or replayed from saved answers

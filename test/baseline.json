@@ -20,5 +20,16 @@
     "band": 49,
     "extra": 0,
     "total": 49
+  },
+  "philips-road": {
+    "refs": 66,
+    "ends": 63,
+    "direction": 63,
+    "type": 66,
+    "size": 66,
+    "voltage": 66,
+    "band": 66,
+    "extra": 0,
+    "total": 66
   }
 }
