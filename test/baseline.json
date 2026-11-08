@@ -2,12 +2,23 @@
   "gaskell-st": {
     "refs": 54,
     "ends": 52,
-    "direction": 26,
+    "direction": 28,
     "type": 49,
     "size": 53,
     "voltage": 54,
     "band": 54,
     "extra": 0,
     "total": 54
+  },
+  "knutsford-dt": {
+    "refs": 49,
+    "ends": 48,
+    "direction": 48,
+    "type": 49,
+    "size": 49,
+    "voltage": 49,
+    "band": 49,
+    "extra": 0,
+    "total": 49
   }
 }
