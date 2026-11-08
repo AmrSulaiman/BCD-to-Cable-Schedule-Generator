@@ -15,6 +15,7 @@
   },
   "type": "module",
   "devDependencies": {
+    "@napi-rs/canvas": "^0.1.65",
     "esbuild": "^0.24.2"
   },
   "private": true,

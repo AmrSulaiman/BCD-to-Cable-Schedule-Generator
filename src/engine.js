@@ -8,7 +8,7 @@ import { DEFAULT_RULES, titleCase, voltageForBand, normaliseSize } from './rules
 
 const REF_RE = /^([A-Z]{1,3}\d{2}[A-Z]{2}[0-9X]{3,5}(?:-\d+)?)\s*(?:\(\s*(B\d(?:\s*[&+\/]\s*B\d)?)\s*\))?$/;
 const BAND_RE = /^\(\s*(B\d(?:\s*[&+\/]\s*B\d)?)\s*\)$/;
-const DWG_RE = /\d{6,}-\d{2}-[A-Z]{2,4}-\d{4,6}-[A-Z]{2}-[A-Z]{2}-[A-Z]-\d{4,6}/;
+export const DWG_RE = /\d{6,}-\d{2}-[A-Z]{2,4}-\d{4,6}-[A-Z]{2}-[A-Z]{2}-[A-Z]-\d{4,6}/;
 // Text that is part of a symbol, not a name
 const NOISE_RE = /^(P|C|E|M|H|TH|SL|VSD|DOL|E\.\s?S\.?|f\d|\d~|NOTE\s*\d+|LIT\d+|[\d.]+\s*kW)$/i;
 // Asset tag lines printed under equipment names, e.g. 07808-SU1-NA1-BLD01-HT001
@@ -485,8 +485,21 @@ export function extractDrawing(geom, fileName = '', rules = DEFAULT_RULES) {
     resolved.push(rec);
   }
 
+  // the part of the sheet that holds the diagram (used to aim the AI's close-up images)
+  const pts = [];
+  for (const st of strips) pts.push([st.x0, st.y0], [st.x1, st.y1]);
+  for (const L of labels) pts.push([L.t.x0, L.t.y0], [L.t.x1, L.t.y1]);
+  for (const r of resolved) for (const n of r.ends) if (n.pos) pts.push(n.pos);
+  for (const b of blocks || []) pts.push([b.x0, b.y0], [b.x1, b.y1]);
+  const pad = 40;
+  const area = pts.length ? [
+    Math.max(0, Math.min(...pts.map(p => p[0])) - pad), Math.max(0, Math.min(...pts.map(p => p[1])) - pad),
+    Math.min(isFinite(tbX) ? tbX : geom.width, Math.max(...pts.map(p => p[0])) + pad), Math.min(geom.height, Math.max(...pts.map(p => p[1])) + pad),
+  ].map(Math.round) : [0, 0, Math.round(geom.width), Math.round(geom.height)];
+
   return {
     file: fileName,
+    page: { width: Math.round(geom.width), height: Math.round(geom.height), area, textCount: texts.length },
     drawing: { ...tb, _titleBlockX: undefined },
     panel: strip ? { name: strip.name, rawName: strip.rawName } : null,
     cables: resolved,

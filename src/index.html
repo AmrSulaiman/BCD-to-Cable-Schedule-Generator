@@ -107,6 +107,30 @@ tr.flagged .dot { background: var(--warn); }
 .flags { min-width: 260px; }
 .chip { display: block; font-size: 0.8rem; color: var(--warn); line-height: 1.35; margin-bottom: 3px; }
 .sheets { white-space: nowrap; }
+.ai { border-top: 1px solid var(--rule); padding-top: 12px; display: grid; gap: 10px; }
+.ai .switch { display: flex; gap: 8px; align-items: flex-start; font-size: 0.9rem; cursor: pointer; }
+.ai .switch input { margin-top: 4px; }
+.beta { font-size: 0.7rem; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; border: 1px solid var(--accent); color: var(--accent); padding: 0 5px; margin-right: 2px; }
+#ai-panel { display: grid; gap: 10px; }
+#ai-panel[hidden] { display: none; }
+#ai-panel label { display: grid; gap: 3px; font-size: 0.82rem; color: var(--muted); }
+#ai-panel label.inline { display: flex; gap: 6px; align-items: center; }
+.notice { margin: 0; font-size: 0.82rem; border-left: 3px solid var(--warn); padding: 4px 0 4px 10px; color: var(--ink); }
+.ai-result { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 0.86rem; align-items: baseline; }
+.ai-result details { flex-basis: 100%; color: var(--muted); }
+.ai-result ul { margin: 4px 0 0; padding-left: 18px; }
+.ok { color: var(--good); } .warnc { color: var(--warn); } .badc { color: var(--bad); }
+.badge { display: inline-block; font-size: 0.74rem; font-weight: 600; padding: 2px 7px; border: 1px solid var(--rule); white-space: nowrap; }
+.badge[data-st=agreed] { color: var(--good); border-color: var(--good); }
+.badge[data-st=disputed], .badge[data-st=unconfirmed], .badge[data-st=ai_only], .badge[data-st=rules_only] { color: var(--warn); border-color: var(--warn); background: var(--warn-bg); }
+.badge[data-st=not_checked] { color: var(--bad); border-color: var(--bad); }
+td.disputed { box-shadow: inset 3px 0 0 var(--warn); }
+.pick { display: grid; gap: 3px; margin-bottom: 8px; font-size: 0.8rem; }
+.pick-label { font-weight: 600; color: var(--muted); font-size: 0.74rem; text-transform: uppercase; letter-spacing: .03em; }
+button.opt { background: var(--sheet); color: var(--ink); border: 1px solid var(--rule); padding: 3px 8px; font-size: 0.8rem; font-weight: 400; text-align: left; }
+button.opt:hover { border-color: var(--accent); }
+button.opt.rec { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
+.why { color: var(--muted); font-size: 0.78rem; }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 </style>
 </head>
@@ -117,7 +141,7 @@ tr.flagged .dot { background: var(--warn); }
       <h1>BCD to Cable Schedule</h1>
       <p>Drop the block cable diagrams for one schedule. The tool reads every cable reference, traces each cable to its source and destination, merges cables shown on more than one sheet, and fills the company cable schedule template.</p>
     </div>
-    <div class="local"><b>Stays on this computer.</b> Drawings are read inside your browser and never uploaded.</div>
+    <div class="local"><b>Runs on this computer.</b> Drawings are read inside your browser. They are only sent out if you run the optional AI cross-check.</div>
   </div>
 </header>
 
@@ -151,6 +175,17 @@ tr.flagged .dot { background: var(--warn); }
         <div class="tpl"><span class="muted">Template:</span> <span id="tpl-name">Built-in company template</span>
           <label for="tpl">use a different .xlsx</label><input id="tpl" class="sr" type="file" accept=".xlsx"></div>
         <p class="muted" style="margin:0;font-size:.82rem">Voltage comes from the band: B1 = 24V, B2 and B1&amp;B2 = 400V. Length, CPC type, installation method and comments are left blank.</p>
+      </div>
+      <div class="ai">
+        <label class="switch" for="ai-on"><input id="ai-on" type="checkbox"> <span><b>AI cross-check</b> <span class="beta">beta</span> (optional): a second, independent reading of the drawings by Google Gemini</span></label>
+        <div id="ai-panel" hidden>
+          <p class="notice">When you run it, images of the drawings are sent to Google's Gemini service. On Google's free tier, Google may use what you send to improve its products. The rules engine's reading never leaves this computer.</p>
+          <label for="ai-key">Gemini API key <span class="muted">(free from aistudio.google.com → Get API key)</span>
+            <input id="ai-key" type="password" autocomplete="off" spellcheck="false" placeholder="Paste your key"></label>
+          <label class="inline" for="ai-remember"><input id="ai-remember" type="checkbox"> Remember the key in this browser</label>
+          <div class="actions"><button id="btn-ai" type="button" disabled>Run AI cross-check</button></div>
+          <div id="ai-result" class="ai-result"></div>
+        </div>
       </div>
     </div>
   </section>

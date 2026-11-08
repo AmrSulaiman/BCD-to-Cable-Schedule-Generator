@@ -15,6 +15,12 @@
 //   node test/run-all.mjs                    run all projects
 //   node test/run-all.mjs gaskell-st         run one project
 //   node test/run-all.mjs --update-baseline  accept the current scores as the new baseline
+//
+// AI cross-check:
+//   If a project has ai-answers.json (the AI's saved answers), the cross-check is replayed
+//   from it, free and repeatable, and scored as "AI alone" and "Rules + AI".
+//   GEMINI_API_KEY=... node test/run-all.mjs --ai-live gaskell-st
+//     asks the AI again and saves its answers to ai-answers.json.
 
 import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
 import ExcelJS from 'exceljs';
@@ -24,12 +30,16 @@ import { fileURLToPath } from 'url';
 import { readPage } from '../src/pdfread.js';
 import { extractDrawing, mergeDrawings } from '../src/engine.js';
 import { DEFAULT_RULES } from '../src/rules.js';
+import { crossCheck, recordingProvider, replayProvider } from '../src/ai/crosscheck.js';
+import { renderPageForAI } from '../src/ai/render.js';
+import { geminiProvider } from '../src/ai/gemini.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const projectsDir = path.join(here, 'projects');
 const baselineFile = path.join(here, 'baseline.json');
 const args = process.argv.slice(2);
 const updateBaseline = args.includes('--update-baseline');
+const aiLive = args.includes('--ai-live');
 const only = args.filter(a => !a.startsWith('--'));
 
 const METRICS = [
@@ -87,16 +97,27 @@ async function readCorrectSchedule(file) {
 
 // ---------------------------------------------------------------- running the tool
 async function runTool(pdfFiles, settings) {
-  const drawings = [];
+  const drawings = [], sheets = [];
   for (const f of pdfFiles) {
-    const doc = await pdfjs.getDocument({ data: new Uint8Array(fs.readFileSync(f)), verbosity: 0 }).promise;
+    const bytes = fs.readFileSync(f);
+    const doc = await pdfjs.getDocument({ data: new Uint8Array(bytes), verbosity: 0 }).promise;
     for (let p = 1; p <= doc.numPages; p++) {
       const geom = await readPage(pdfjs, await doc.getPage(p));
-      drawings.push(extractDrawing(geom, path.basename(f)));
+      const d = extractDrawing(geom, doc.numPages > 1 ? `${path.basename(f)} (page ${p})` : path.basename(f));
+      drawings.push(d);
+      sheets.push({
+        drawing: d, pageText: geom.texts.map(t => t.str).join(' '),
+        getImages: async () => {
+          const { createCanvas } = await import('@napi-rs/canvas');
+          const doc2 = await pdfjs.getDocument({ data: new Uint8Array(bytes), verbosity: 0 }).promise;
+          const r = await renderPageForAI(await doc2.getPage(p), { area: d.page.area, makeCanvas: createCanvas, encode: async c => (await c.encode('png')).toString('base64') });
+          return r.images;
+        },
+      });
     }
   }
   const rules = { ...DEFAULT_RULES, ...(settings.direction ? { direction: settings.direction } : {}) };
-  return { drawings, rows: mergeDrawings(drawings, rules).rows };
+  return { drawings, sheets, rules, rows: mergeDrawings(drawings, rules).rows };
 }
 
 // ---------------------------------------------------------------- comparing
@@ -147,8 +168,29 @@ for (const name of projects) {
   }
   try {
     const correct = await readCorrectSchedule(path.join(dir, xlsx[0]));
-    const { drawings, rows } = await runTool(pdfs, settings);
+    const { drawings, sheets, rules, rows } = await runTool(pdfs, settings);
     results[name] = { sheets: drawings.length, ...compare(correct, rows) };
+    // AI cross-check: live (records answers) or replayed from saved answers
+    const answersFile = path.join(dir, 'ai-answers.json');
+    let provider = null, recorder = null;
+    if (aiLive) {
+      if (!process.env.GEMINI_API_KEY) throw new Error('--ai-live needs GEMINI_API_KEY');
+      recorder = recordingProvider(geminiProvider({ apiKey: process.env.GEMINI_API_KEY, model: process.env.GEMINI_MODEL }));
+      provider = recorder;
+      console.error(`${name}: asking the AI (${await provider.model()})…`);
+    } else if (fs.existsSync(answersFile)) {
+      provider = replayProvider(JSON.parse(fs.readFileSync(answersFile, 'utf8')).answers);
+    }
+    if (provider) {
+      const res = await crossCheck({ sheets, ruleRows: rows, rules, provider, onProgress: m => aiLive && console.error('  ' + m) });
+      if (recorder) fs.writeFileSync(answersFile, JSON.stringify({ model: res.model, promptVersion: res.raw.promptVersion, recorded: new Date().toISOString(), answers: recorder.store }, null, 1) + '\n');
+      const final = compare(correct, res.rows), alone = compare(correct, res.aiRows);
+      // how trustworthy is an "agreed" row?
+      const agreed = res.rows.filter(r => r.check?.status === 'agreed');
+      const agreedRight = agreed.filter(r => { const k = correct.get(r.ref); return k && ['type', 'size', 'band'].every(f => norm(k[f]) === norm(r[f])) &&
+        [norm(k.source), norm(k.destination)].sort().join('|') === [norm(r.source), norm(r.destination)].sort().join('|'); }).length;
+      results[name].ai = { model: res.model, alone, final, summary: res.summary, agreed: agreed.length, agreedRight, log: res.log };
+    }
   } catch (e) {
     problems.push(`${name}: crashed: ${e.stack || e}`);
   }
@@ -188,6 +230,23 @@ if (regressions.length) lines.push('## ❌ Accuracy went down', '', ...regressio
 if (problems.length) lines.push('## ❌ Problems', '', ...problems.map(p => `- ${p}`), '');
 const newOnes = Object.keys(results).filter(n => !baseline[n]);
 if (newOnes.length && !updateBaseline) lines.push(`New project(s) with no baseline yet: ${newOnes.join(', ')}. Their scores are reported but cannot fail the run until the baseline is updated.`, '');
+const withAI = Object.entries(results).filter(([, r]) => r.ai);
+if (withAI.length) {
+  lines.push('## AI cross-check', '');
+  lines.push(`| Project | Model | Reading | ${METRICS.map(m => m[1]).join(' | ')} |`);
+  lines.push(`|---|---|---|${METRICS.map(() => '---').join('|')}|`);
+  for (const [name, r] of withAI) {
+    lines.push(`| ${name} | ${r.ai.model} | Rules alone | ${METRICS.map(([k]) => pct(r.score[k], r.total)).join(' | ')} |`);
+    lines.push(`| | | AI alone | ${METRICS.map(([k]) => pct(r.ai.alone.score[k], r.total)).join(' | ')} |`);
+    lines.push(`| | | **Rules + AI** | ${METRICS.map(([k]) => `**${pct(r.ai.final.score[k], r.total)}**`).join(' | ')} |`);
+  }
+  lines.push('');
+  for (const [name, r] of withAI) {
+    const s = r.ai.summary;
+    lines.push(`**${name}:** ${s.agreed} rows agreed (${r.ai.agreedRight} of them fully match the correct schedule), ${s.disputed} disputed, ${s.unconfirmed} partly confirmed, ${s.aiOnly} found by AI only, ${s.rulesOnly} not reported by AI, ${s.notChecked} not checked.`);
+  }
+  lines.push('');
+}
 lines.push('## Differences by project', '');
 for (const [name, r] of Object.entries(results)) {
   lines.push(`<details><summary><b>${name}</b>: ${r.diffs.length} difference${r.diffs.length === 1 ? '' : 's'}</summary>`, '');

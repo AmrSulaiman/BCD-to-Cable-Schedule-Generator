@@ -10,7 +10,7 @@ You drop the BCD PDFs for one schedule (usually 4 or 5 sheets) into a web page. 
 4. checks the result and marks anything it could not confirm
 5. writes the schedule into the template and offers it as an `.xlsx` download
 
-Everything runs in the user's browser. **The drawings are never uploaded.**
+Everything runs in the user's browser. **The drawings are never uploaded**, unless the user switches on the optional AI cross-check.
 
 ---
 
@@ -115,6 +115,45 @@ PDF ──► pdfread.js ──► engine.js: extractDrawing ──► engine.js
 - Title block captions `W&B DRAWING No:`, `REV:`, `TITLE:`, `PROJECT:`. `CLIENT DRAWING No:` is only needed when sheets refer to each other with `FROM/TO DRAWING` notes
 
 ---
+
+## AI cross-check (optional)
+
+The rules engine reads the drawings exactly but only understands drafting styles it has rules for. The optional AI cross-check adds a second, independent reading by an AI model (Google Gemini, free tier), so new drawing styles and scanned sheets are still covered without anyone writing new rules.
+
+**How it works**
+
+1. **Read.** Each sheet is sent to the AI as images (an overview plus close-up tiles, so small text stays readable) with the list of cable references the rules engine found, but **not** the rules engine's answers. The AI reports each cable's ends, cores & size, type and band.
+2. **Check.** The AI's answer is checked by code before it is used: fixed answer format, valid references only, and any cable the rules engine did not find must appear in the drawing's own text, or it is discarded.
+3. **Compare.** The AI's reading goes through the same merge and naming rules as the rules engine, then the two are compared field by field.
+4. **Review.** Only the fields where they disagree go back to the AI, with both candidate values and the drawing, to say which one the drawing shows and why.
+5. **Result.** Every row gets a status: **Agreed**, **Disputed**, **Partly confirmed**, **AI only**, **Rules only** or **Not checked**. Disputed fields show both values with the AI's reason; one click picks the right one. Nothing the AI decides is applied without being marked for checking.
+
+It is an AI step inside a fixed pipeline, not an agent: the code decides what happens, the AI only reads.
+
+**Using it:** tick *AI cross-check* in step 02, paste a Gemini API key (free from [Google AI Studio](https://aistudio.google.com) → Get API key), and click *Run AI cross-check*. The key can be remembered in your browser; it is never stored in this repository or on the website.
+
+**If the AI is unavailable, the tool still works.** The rules engine never depends on the AI: reading drawings, editing and downloading the schedule work the same with the AI off, failing or out of free allowance. Safeguards:
+
+| Problem | What the tool does |
+|---|---|
+| Per-minute limit reached | Waits as long as Google asks (up to about a minute), then carries on |
+| A model's daily free limit used up | Switches to the next free Gemini model (e.g. Flash-Lite) |
+| No answer from Google | Gives up on that request after 90 seconds and tries again |
+| One sheet keeps failing | The other sheets are still checked; that sheet's rows are marked *Not checked*; **Retry what failed** asks again for only those sheets |
+| Google unreachable or key rejected | A plain message; the schedule stays as the rules engine read it |
+
+Requests are spaced a few seconds apart so a large drawing set does not hit the per-minute limit by itself.
+
+**Privacy:** the rules engine never sends drawings anywhere. The AI cross-check sends images of the drawings to Google. On Google's free tier, Google may use what is sent to improve its products.
+
+| File | Job |
+|---|---|
+| `src/ai/render.js` | Turns a PDF page into an overview image and close-up tiles of the diagram area |
+| `src/ai/prompt.js` | The fixed instructions and answer formats for the AI (`PROMPT_VERSION`) |
+| `src/ai/gemini.js` | The only file that talks to Google; picks the newest free Flash model, retries on limits |
+| `src/ai/crosscheck.js` | Read → check → compare → review → status, plus saving/replaying answers for tests |
+
+**Tests:** a project's `ai-answers.json` holds the AI's saved answers. `npm test` replays them (free, no key needed) and reports *Rules alone*, *AI alone* and *Rules + AI*. To ask the AI again: `GEMINI_API_KEY=... node test/run-all.mjs --ai-live <project>`.
 
 ## Accuracy tests
 
